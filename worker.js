@@ -3882,12 +3882,46 @@ async function sendEmail(env, to, subject, html, text, contactId, opts) {
     // a custom field — has no email of its own. Send through the recipient's own contact instead (14 Oct: 22 of 70
     // verification invites failed this way, and claim-approved emails to claimants could too).
     if (!r.ok && contactId) {
+      const why = (await r.clone().text().catch(() => "")).slice(0, 200);
+      // Keep the email on the business contact's Conversations tab (Eric, 26 Oct: invites were landing on a separate
+      // "Info" contact, so sales saw nothing on the business): give the business contact this address — as its email
+      // when it has none, else as an extra email (primary kept) — and send through it again. A native-fields-only call.
+      if (/no email|INVALID_EMAILTO|not under contact/i.test(why)) try {
+        const bc = await ghlGetContact(env, contactId);
+        const extra = (bc && bc.additionalEmails || []).map(x => NRM(x && x.email || x)).filter(Boolean);
+        if (bc && ![ NRM(bc.email || ""), ...extra ].includes(NRM(to))) {
+          const u = await fetch(`${API}/contacts/${contactId}`, {
+            method: "PUT",
+            headers: {
+              ...H(env),
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(bc.email ? {
+              email: bc.email,
+              additionalEmails: [ ...extra, NRM(to) ].map(e => ({
+                email: e
+              }))
+            } : {
+              email: NRM(to)
+            })
+          });
+          if (u.ok) {
+            const r2 = await post(contactId);
+            if (r2.ok) r = r2; else console.log("ghl email via " + contactId + " still failed after adding the address: " + r2.status);
+          } else console.log("ghl email: couldn't add " + MASK(to) + " to " + contactId + " (" + u.status + " " + (await u.text()).slice(0, 160) + ")");
+        }
+      } catch (e) {
+        console.log("ghl email: add-address step failed: " + e.message);
+      }
+    }
+    if (!r.ok && contactId) {
       const why = (await r.text()).slice(0, 200);
       const own = await ghlFindOrCreateContact(env, to, {});
       if (own && own !== contactId) {
         console.log("ghl email via " + contactId + " failed (" + r.status + " " + why + ") — retrying via the recipient's own contact");
         cid = own;
         r = await post(own);
+        if (r.ok) await ghlNote(env, contactId, `Email "${subject}" sent to ${to}. GHL keeps it on that address's own contact (it already belongs to another contact), so look there for the conversation.`);
       } else {
         console.log("ghl email " + r.status + ": " + why);
         return false;
@@ -8513,7 +8547,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.76-shared";
+const BUILD = "v16.77-shared";
 
 const APP_COOKIE = "gl_app";
 
