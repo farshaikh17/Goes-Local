@@ -2818,6 +2818,8 @@ const LISTING_VERIFICATION_TIERS = {
   "listing verified pro": "pro"
 };
 
+const OWNER_DETAILS = [ [ "Owner Name", [ "owner name" ] ], [ "Owner Phone", [ "owner phone", "owner phone number" ] ], [ "Owner Email", [ "owner email", "owner e-mail", "owneremail" ] ] ];
+
 async function applyListingVerification(env, DB, cid) {
   if (!DB || !cid) return {
     ok: false,
@@ -2847,6 +2849,23 @@ async function applyListingVerification(env, DB, cid) {
     const row = await DB.prepare("SELECT claimed FROM businesses WHERE ghl_id=?1").bind(cid).first();
     hold = !req && !(row && row.claimed);
   } catch {}
+  if (hold) {
+    // A cold-call Verified must say who the owner is (Eric, 27 Oct): no invite and no hold until Owner Name, Owner Phone
+    // and Owner Email are filled. A field this account doesn't have yet isn't asked for.
+    const gaps = OWNER_DETAILS.filter(([ , keys ]) => fieldId(m, ...keys) && !keys.some(k => String(P(v, k) || "").trim())).map(([ label ]) => label);
+    if (gaps.length) {
+      await ghlAddTag(env, cid, [ "owner-details-missing" ]).catch(() => {});
+      await ghlNote(env, cid, `Marked Listing Verified, but ${gaps.join(" and ")} ${gaps.length > 1 ? "are" : "is"} empty, so no invite was sent and the listing is not claimed. Fill in Owner Name, Owner Phone and Owner Email, then set Listing Verification again.`).catch(() => {});
+      return {
+        ok: true,
+        cid: cid,
+        tier: tier,
+        handled: "owner-details-missing",
+        missing: gaps
+      };
+    }
+    await ghlRemoveTag(env, cid, [ "owner-details-missing" ]).catch(() => {});
+  }
   const addTags = hold ? [ "business", "awaiting-owner-login" ] : [ "business", "claimed", "Recently Claimed" ];
   const removeTags = hold ? [ "claimed", "Recently Claimed" ] : [];
   if (!hold) {
@@ -3104,7 +3123,8 @@ async function activateOwner(env, email) {
         await insertOne(env, DB, r.ghl_id, { ...c, tags: [ ...new Set([ ...(c.tags || []).map(lower).filter(t => !rm.map(lower).includes(t)), ...add.map(lower) ]) ] });
       }
       await DB.prepare("UPDATE businesses SET claimed_at=?1 WHERE ghl_id=?2 AND claimed_at IS NULL").bind(Date.now(), r.ghl_id).run();
-      await ghlNote(env, r.ghl_id, `The owner (${em}) signed in for the first time on ${new Date().toISOString().slice(0, 10)}. The listing now counts as claimed${r.tier === "verified" ? "" : " (" + r.tier + ")"}.`);
+      await ghlAddTag(env, r.ghl_id, [ "owner-email-verified" ]).catch(() => {});
+      await ghlNote(env, r.ghl_id, `The owner (${em}) signed in for the first time on ${new Date().toISOString().slice(0, 10)} with the code we emailed, so ${em} is verified as the Owner Email. The listing now counts as claimed${r.tier === "verified" ? "" : " (" + r.tier + ")"}.`);
       n++;
     } catch (e) {
       console.log("activateOwner failed for " + r.ghl_id + ": " + e.message);
@@ -3902,16 +3922,16 @@ async function sendEmail(env, to, subject, html, text, contactId, opts) {
     // GHL refuses ("Contact has no email") when the given contact — often a business contact whose email lives in
     // a custom field — has no email of its own. Send through the recipient's own contact instead (14 Oct: 22 of 70
     // verification invites failed this way, and claim-approved emails to claimants could too).
-    if (!r.ok && contactId) {
+    if (!r.ok && cid) {
       const why = (await r.clone().text().catch(() => "")).slice(0, 200);
       // Keep the email on the business contact's Conversations tab (Eric, 26 Oct: invites were landing on a separate
       // "Info" contact, so sales saw nothing on the business): give the business contact this address — as its email
       // when it has none, else as an extra email (primary kept) — and send through it again. A native-fields-only call.
       if (/no email|INVALID_EMAILTO|not under contact/i.test(why)) try {
-        const bc = await ghlGetContact(env, contactId);
+        const bc = await ghlGetContact(env, cid);
         const extra = (bc && bc.additionalEmails || []).map(x => NRM(x && x.email || x)).filter(Boolean);
         if (bc && ![ NRM(bc.email || ""), ...extra ].includes(NRM(to))) {
-          const u = await fetch(`${API}/contacts/${contactId}`, {
+          const u = await fetch(`${API}/contacts/${cid}`, {
             method: "PUT",
             headers: {
               ...H(env),
@@ -3927,22 +3947,23 @@ async function sendEmail(env, to, subject, html, text, contactId, opts) {
             })
           });
           if (u.ok) {
-            const r2 = await post(contactId);
-            if (r2.ok) r = r2; else console.log("ghl email via " + contactId + " still failed after adding the address: " + r2.status);
-          } else console.log("ghl email: couldn't add " + MASK(to) + " to " + contactId + " (" + u.status + " " + (await u.text()).slice(0, 160) + ")");
+            const r2 = await post(cid);
+            if (r2.ok) r = r2; else console.log("ghl email via " + cid + " still failed after adding the address: " + r2.status);
+          } else console.log("ghl email: couldn't add " + MASK(to) + " to " + cid + " (" + u.status + " " + (await u.text()).slice(0, 160) + ")");
         }
       } catch (e) {
         console.log("ghl email: add-address step failed: " + e.message);
       }
     }
-    if (!r.ok && contactId) {
+    if (!r.ok && cid) {
+      // Last resort only (the address already sits on another contact, or GHL refused it): send via that address's own contact.
       const why = (await r.text()).slice(0, 200);
-      const own = await ghlFindOrCreateContact(env, to, {});
-      if (own && own !== contactId) {
-        console.log("ghl email via " + contactId + " failed (" + r.status + " " + why + ") — retrying via the recipient's own contact");
+      const via = cid, own = await ghlFindOrCreateContact(env, to, { noBiz: true });
+      if (own && own !== via) {
+        console.log("ghl email via " + via + " failed (" + r.status + " " + why + ") — retrying via the recipient's own contact");
         cid = own;
         r = await post(own);
-        if (r.ok) await ghlNote(env, contactId, `Email "${subject}" sent to ${to}. GHL keeps it on that address's own contact (it already belongs to another contact), so look there for the conversation.`);
+        if (r.ok) await ghlNote(env, via, `Email "${subject}" sent to ${to}. GHL keeps it on that address's own contact (it already belongs to another contact), so look there for the conversation.`);
       } else {
         console.log("ghl email " + r.status + ": " + why);
         return false;
@@ -3961,7 +3982,33 @@ async function sendEmail(env, to, subject, html, text, contactId, opts) {
   }
 }
 
+// An owner's account lives on their business's own contact, never a new "person" contact (Eric, 27 Oct: owner and
+// consumer duplicates had to be merged by hand). GHL only finds a contact by its main email, so an Owner Email that
+// isn't the business's main one is matched from our own records: Owner Email, then a held sales invite, then the
+// business email.
+async function bizContactFor(env, email) {
+  const DB = getDB(env), em = NRM(email);
+  if (!DB || !em) return null;
+  for (const q of [ "SELECT ghl_id FROM businesses WHERE owner_email=?1", "SELECT ghl_id FROM owner_pending WHERE email=?1", "SELECT ghl_id FROM businesses WHERE email=?1" ]) try {
+    const r = await DB.prepare(q + " LIMIT 1").bind(em).first();
+    if (r && r.ghl_id) return r.ghl_id;
+  } catch {}
+  return null;
+}
+
+async function isBizContact(DB, cid) {
+  try {
+    return !!(DB && cid && await DB.prepare("SELECT 1 FROM businesses WHERE ghl_id=?1").bind(cid).first());
+  } catch {
+    return false;
+  }
+}
+
 async function ghlFindContactByEmail(env, email) {
+  return await ghlSearchEmail(env, email) || await bizContactFor(env, email);
+}
+
+async function ghlSearchEmail(env, email) {
   try {
     const r = await fetch(`${API}/contacts/search/duplicate?locationId=${env.GHL_LOCATION_ID}&email=${encodeURIComponent(email)}`, {
       headers: H(env)
@@ -4733,8 +4780,12 @@ async function ghlFindOrCreateContact(env, email, opt) {
       console.log("ghlFindOrCreateContact field lookup failed: " + e.message);
     }
   }
-  let found = await ghlFindContactByEmail(env, email);
-  let viaPhone = false;
+  let found = await ghlSearchEmail(env, email);
+  let viaPhone = false, viaBiz = false;
+  if (!found && !opt.noBiz) {
+    found = await bizContactFor(env, email);
+    viaBiz = !!found;
+  }
   if (!found && opt.phone) {
     try {
       const byPhone = await ghlFindContactByPhone(env, opt.phone);
@@ -4745,6 +4796,27 @@ async function ghlFindOrCreateContact(env, email, opt) {
     } catch (e) {
       console.log("ghlFindOrCreateContact phone lookup failed: " + e.message);
     }
+  }
+  if (found && viaBiz) {
+    // The business contact keeps its own name and company; the person's name only fills an empty Owner Name.
+    try {
+      const m = await fields(env), c = await ghlGetContact(env, found), fid = fieldId(m, "owner name");
+      if (fid && c && opt.name && !String(P(cv(c, m), "owner name") || "").trim()) customFields.push({ id: fid, value: String(opt.name).trim() });
+      const cf = customFields.filter((x, i, a) => a.findIndex(y => y.id === x.id) === i);
+      if (cf.length) await fetch(`${API}/contacts/${found}`, {
+        method: "PUT",
+        headers: {
+          ...H(env),
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          customFields: cf
+        })
+      });
+    } catch (e) {
+      console.log("business-contact backfill failed: " + e.message);
+    }
+    return found;
   }
   if (found) {
     if (opt.name || opt.companyName || customFields.length || viaPhone) try {
@@ -8568,7 +8640,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.78-shared";
+const BUILD = "v16.79-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -11406,7 +11478,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
           firstName: ""
         };
       }
-      const email = contact && contact.email ? NRM(contact.email) : "";
+      const email = contact && isEmail ? NRM(target) : contact && contact.email ? NRM(contact.email) : "";
       console.log(`code request (${purpose}) via ${isEmail ? "email" : "sms"} for ${isEmail ? MASK(NRM(target)) : MASKPHONE(target)}: ${email ? "account found, sending" : "no account, nothing sent"}`);
       const issued = await issueSignupOtp(env, {
         purpose: purpose,
@@ -11683,14 +11755,21 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         });
         if (cid) {
           const c = await ghlGetContact(env, cid);
-          if (c) {
+          const m = await fields(env);
+          if (c && await isBizContact(DB, cid)) {
+            // An owner signed in on their business's contact: their own name and phone are its Owner Name / Owner Phone;
+            // the business's address and main phone aren't theirs to show or change here.
+            const v = cv(c, m), on = String(P(v, "owner name") || "").trim().split(/\s+/);
+            firstName = on[0] || "";
+            lastName = on.slice(1).join(" ");
+            phone = P(v, "owner phone", "owner phone number") || "";
+          } else if (c) {
             firstName = c.firstName || "";
             lastName = c.lastName || "";
             phone = c.phone || "";
             address = c.address1 || "";
             city = c.city || "";
             zip = c.postalCode || "";
-            const m = await fields(env);
             const bdFid = fieldId(m, "birthdate", "date of birth", "dob");
             const gnFid = fieldId(m, "gender");
             const cf = (c.customFields || []).reduce((o, x) => {
@@ -11739,6 +11818,13 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
           value: gender
         }); else missing.push("gender");
       }
+      const onBiz = await isBizContact(DB, cid);
+      if (onBiz) {
+        const onFid = fieldId(m, "owner name"), opFid = fieldId(m, "owner phone", "owner phone number");
+        const full = [ firstName, lastName ].filter(Boolean).join(" ");
+        if (onFid && full) cf.push({ id: onFid, value: full });
+        if (opFid && phone) cf.push({ id: opFid, value: phone });
+      }
       try {
         const r = await fetch(`${API}/contacts/${cid}`, {
           method: "PUT",
@@ -11746,7 +11832,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
             ...H(env),
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({
+          body: JSON.stringify(onBiz ? { customFields: cf } : {
             firstName: firstName || undefined,
             lastName: lastName || undefined,
             phone: phone || undefined,
@@ -13503,17 +13589,39 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
           console.log(e2.message);
         }
       }
-      const cid = await ghlFindOrCreateContact(env, email, {
+      // The claim goes on the business's own contact (Eric, 27 Oct: no new person contacts); only a dispute of a listing
+      // someone already owns keeps the claimant on a contact of their own so the two sides stay apart.
+      const claimFields = {
+        "claim role": role,
+        "claim notes": fullNotes,
+        "owner name": needsOwner ? ownerName : name,
+        "owner phone": needsOwner ? ownerPhone : phone
+      };
+      let cid = null;
+      if (already) cid = await ghlFindOrCreateContact(env, email, {
         name: name,
         phone: phone,
         companyName: b.name,
-        fields: {
-          "claim role": role,
-          "claim notes": fullNotes,
-          "owner name": needsOwner ? ownerName : undefined,
-          "owner phone": needsOwner ? ownerPhone : undefined
-        }
-      });
+        fields: claimFields
+      }); else try {
+        // Owner Name / Owner Phone already on the contact (e.g. from sales) are kept; they only fill empty ones.
+        const m = await fields(env), bv = cv(await ghlGetContact(env, id) || {}, m);
+        const cf = Object.keys(claimFields).filter(k => k.startsWith("claim") || !String(P(bv, k) || "").trim()).map(k => [ fieldId(m, k), claimFields[k] ]).filter(([ fid, val ]) => fid && val).map(([ fid, val ]) => ({ id: fid, value: val }));
+        if (cf.length) await fetch(`${API}/contacts/${id}`, {
+          method: "PUT",
+          headers: {
+            ...H(env),
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            customFields: cf
+          })
+        });
+        cid = id;
+      } catch (e) {
+        console.log("claim: business contact update failed: " + e.message);
+        cid = id;
+      }
       const seoTag = leadChannelTag(utmSource, utmMedium);
       if (cid) await ghlAddTag(env, cid, [ "claim-request", utmSource ? `source-${SL(utmSource)}` : "" ].filter(Boolean));
       if (seoTag && cid) await addSeoInbound(env, cid);
@@ -13522,7 +13630,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       } catch (e) {
         console.log("claim: seoinbound on business contact failed: " + e.message);
       }
-      if (cid) try {
+      if (cid && cid !== id) try {
         await ghlLinkClaimContacts(env, id, b.name, cid, name);
       } catch (e) {
         console.log("claim: cross-link failed: " + e.message);
