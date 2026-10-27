@@ -2260,9 +2260,14 @@ async function syncStep(env, DB, maxPages) {
     // approved listing appears for a few minutes and is then dropped by the next two sync passes.
     // "pending-listing" only hides a contact the add-a-business form itself created (a brand-new submission waiting
     // for approval). An existing listing whose owner sends the form again stays live while that submission waits.
+    // A business contact merged by hand into the owner's old login contact keeps the "consumer"/"owner-account" tags
+    // (Eric, 27 Oct: New Age Mobile Mechanic vanished after a merge), so one held for its owner's first sign-in or one
+    // that already has a listing page (Listing URL) is still a business.
+    const urlFid = fieldId(m, "listing url", "listing_url");
     const isPerson = c => {
       const tags = (c.tags || []).map(t => String(t).trim().toLowerCase());
-      if (tags.includes("claimed")) return false;
+      if (tags.includes("claimed") || tags.includes("awaiting-owner-login")) return false;
+      if (urlFid && (c.customFields || []).some(f => f.id === urlFid && String(f.value || "").trim())) return false;
       if (tags.some(t => t === "consumer" || t === "owner-account")) return true;
       return tags.includes("pending-listing") && /add-a-business/i.test(String(c.source || ""));
     };
@@ -2971,7 +2976,7 @@ async function applyListingVerification(env, DB, cid) {
       return { ok: true, cid: cid, tier: tier, handled: "internal-owner-email" };
     }
     await DB.prepare("INSERT INTO owner_pending(ghl_id,email,tier,created_at) VALUES(?1,?2,?3,?4) ON CONFLICT(ghl_id) DO UPDATE SET email=excluded.email, tier=excluded.tier WHERE owner_pending.activated_at IS NULL").bind(cid, to, tier, Date.now()).run();
-    await ghlNote(env, cid, `Marked ${tier === "verified" ? "Listing Verified" : "Listing Verified " + tier}. Invite ${to ? "sent to " + to : "waiting for an email"}. It counts as claimed only once the owner signs in for the first time with the code we email them.`);
+    await ghlNote(env, cid, `Marked ${tier === "verified" ? "Listing Verified" : "Listing Verified " + tier}. ${to ? "" : "No email to invite yet. "}It counts as claimed only once the owner signs in for the first time with the code we email them.`);
   } catch (e) {
     console.log("applyListingVerification hold failed: " + e.message);
   }
@@ -3006,6 +3011,9 @@ async function applyListingVerification(env, DB, cid) {
           brand: S.brand,
           email: biz.owner_email || biz.email
         }, href, undefined, biz.ghl_id);
+        // The note says what really happened (Eric, 27 Oct: Tango Nail & Spa's notes said "Invite sent" while GHL refused
+        // every email because a bounce had switched on email Do Not Disturb).
+        await ghlNote(env, cid, sent ? `Invite sent to ${inviteTo}.` : `The invite to ${inviteTo} could NOT be sent — GHL refused it. Check the contact's email "Do Not Disturb" (a bounce switches it on) and the address, then set Listing Verification again.`).catch(() => {});
         if (sent) {
           await DB.prepare("UPDATE businesses SET claim_invited_at=?1, claim_invited_to=?2 WHERE ghl_id=?3").bind(Date.now(), inviteTo, biz.ghl_id).run();
           await DB.prepare("DELETE FROM pending_email_invites WHERE ghl_id=?1").bind(biz.ghl_id).run().catch(() => {});
@@ -8633,7 +8641,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.79-shared";
+const BUILD = "v16.80-shared";
 
 const APP_COOKIE = "gl_app";
 
