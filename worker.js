@@ -1801,6 +1801,10 @@ async function migrate(DB, env) {
   try {
     await DB.prepare(`CREATE TABLE IF NOT EXISTS pending_email_invites(\n  ghl_id TEXT PRIMARY KEY, created_at INTEGER)`).run();
   } catch {}
+  // Which address the claim invite last went to, so a corrected Owner Email gets a fresh invite.
+  try {
+    await DB.prepare("ALTER TABLE businesses ADD COLUMN claim_invited_to TEXT DEFAULT ''").run();
+  } catch {}
   // Listings a sales rep marked Verified, waiting for the owner's first sign-in before they count as claimed.
   try {
     await DB.prepare("CREATE TABLE IF NOT EXISTS owner_pending(ghl_id TEXT PRIMARY KEY, email TEXT DEFAULT '', tier TEXT DEFAULT '', created_at INTEGER, reminded_at INTEGER, activated_at INTEGER)").run();
@@ -2972,17 +2976,30 @@ async function applyListingVerification(env, DB, cid) {
     console.log("applyListingVerification hold failed: " + e.message);
   }
   try {
-    const biz = await DB.prepare("SELECT ghl_id,name,cs,slug,email,claimed,owner_email,claim_invited_at FROM businesses WHERE ghl_id=?1").bind(cid).first();
+    const biz = await DB.prepare("SELECT ghl_id,name,cs,slug,email,claimed,owner_email,claim_invited_at,claim_invited_to FROM businesses WHERE ghl_id=?1").bind(cid).first();
     // The GHL workflow now sets Owner Email itself (Contact.Email → Owner Email)
     // in the same run that triggers this webhook, so owner_email is already
     // filled in by the time we get here — it can't be used to tell "already
     // claimed" apart from "just verified". claim_invited_at is the one signal
     // that's entirely ours: it only flips once we've actually sent this exact
     // email, so it's what keeps this from sending twice.
-    if (biz && !biz.claim_invited_at) {
-      // To the Owner Email sales confirmed on the call when there is one, else the business email.
-      const inviteTo = [ biz.owner_email, biz.email ].map(x => NRM(x || "")).find(x => x && !junkEmail(x)) || "";
+    // To the Owner Email sales confirmed on the call when there is one, else the business email.
+    const inviteTo = biz ? [ biz.owner_email, biz.email ].map(x => NRM(x || "")).find(x => x && !junkEmail(x)) || "" : "";
+    // Resend rules (Eric, 27 Oct — sales re-triggered Verified for Muse Health & Beauty after fixing a broken email and
+    // nothing went out): the invite goes again when the address changed since the last one, or when Verified is set
+    // again more than 24 hours later — never once the owner has signed in from it, never more than once a day.
+    let again = false;
+    if (biz && biz.claim_invited_at && inviteTo) {
+      const signedIn = await DB.prepare("SELECT 1 FROM owner_pending WHERE ghl_id=?1 AND activated_at IS NOT NULL").bind(cid).first().catch(() => null);
+      again = !signedIn && (inviteTo !== NRM(biz.claim_invited_to || "") && !!biz.claim_invited_to || Date.now() - biz.claim_invited_at > 24 * 3600e3);
+    }
+    if (biz && inviteTo && BADMAIL(inviteTo) && (!biz.claim_invited_at || again)) {
+      // An address that can't be real (e.g. "&" in a Gmail address) is not emailed; sales are told to fix it.
+      await ghlAddTag(env, cid, [ "owner-email-invalid" ]).catch(() => {});
+      await ghlNote(env, cid, `The Owner Email "${inviteTo}" isn't a valid email address, so no invite was sent. Correct it and set Listing Verification again.`);
+    } else if (biz && (!biz.claim_invited_at || again)) {
       if (inviteTo) {
+        if (again) console.log(`claim invite again for ${cid} (${inviteTo !== NRM(biz.claim_invited_to || "") ? "new address" : "24h passed"})`);
         const href = CLAIMLINK(biz);
         const sent = await sendTplEmail(env, DB, inviteTo, "claim_invite", {
           business: biz.name,
@@ -2990,8 +3007,9 @@ async function applyListingVerification(env, DB, cid) {
           email: biz.owner_email || biz.email
         }, href, undefined, biz.ghl_id);
         if (sent) {
-          await DB.prepare("UPDATE businesses SET claim_invited_at=?1 WHERE ghl_id=?2").bind(Date.now(), biz.ghl_id).run();
+          await DB.prepare("UPDATE businesses SET claim_invited_at=?1, claim_invited_to=?2 WHERE ghl_id=?3").bind(Date.now(), inviteTo, biz.ghl_id).run();
           await DB.prepare("DELETE FROM pending_email_invites WHERE ghl_id=?1").bind(biz.ghl_id).run().catch(() => {});
+          await ghlRemoveTag(env, cid, [ "owner-email-invalid" ]).catch(() => {});
         }
       } else {
         try {
@@ -3033,6 +3051,9 @@ async function applyListingVerification(env, DB, cid) {
     handled: hold ? "awaiting-owner" : "plan-update"
   };
 }
+
+// An email address that can't be real: spaces, no domain dot, or characters mail providers never allow ("&", "#", …).
+const BADMAIL = em => !/^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i.test(String(em || "").trim());
 
 // Our own staff addresses (this site's domain, the company's) can never be a business owner for a held verification.
 const OURMAIL = em => {
@@ -8547,7 +8568,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.77-shared";
+const BUILD = "v16.78-shared";
 
 const APP_COOKIE = "gl_app";
 
