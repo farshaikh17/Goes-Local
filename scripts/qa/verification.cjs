@@ -347,6 +347,18 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const left37 = sql("SELECT ghl_id FROM businesses WHERE ghl_id LIKE 'GC%' ORDER BY ghl_id").map(r => r.ghl_id).join(",");
   const r37 = await F(BASE + "/home-services/gc-copy", { redirect: "manual" });
   ok(left37 === "GC1,GC3" && r37.status === 301 && /gc-best/.test(r37.headers.get("location") || ""), "T37 same Google listing + same name shows once (copy forwards); a different name on that link stays", left37 + " " + r37.status);
+  // T38 a sales-held listing: the owner confirms email, name and phone on /manage/confirm before it counts as claimed
+  sql(`INSERT INTO owner_pending(ghl_id,email,tier,created_at) VALUES('QA8','owner@qaeight.com','verified',1) ON CONFLICT(ghl_id) DO UPDATE SET email='owner@qaeight.com', activated_at=NULL`);
+  require("fs").writeFileSync(SP + "/owner-cookie.txt", ownerCookie);
+  const a38 = await F(BASE + "/account", { redirect: "manual", headers: { cookie: ownerCookie } });
+  const c38 = await F(BASE + "/manage/confirm", { headers: { cookie: ownerCookie } });
+  const c38h = await c38.text();
+  const bad38 = await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ email: "other@x.com", name: "Pat Baker", phone: "8135550100" }) });
+  const bad38h = await bad38.text();
+  const ok38 = await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ email: "Owner@QAEight.com", name: "Pat Baker", phone: "8135550100" }) });
+  const act38 = sql(`SELECT activated_at FROM owner_pending WHERE ghl_id='QA8'`)[0] || {};
+  const a38b = await F(BASE + "/account", { redirect: "manual", headers: { cookie: ownerCookie } });
+  ok(/\/manage\/confirm/.test(a38.headers.get("location") || "") && /QA Eight Bakery/.test(c38h) && /same email you signed in with/.test(bad38h) && ok38.status === 302 && /claimed=1/.test(ok38.headers.get("location") || "") && act38.activated_at > 0 && a38b.status === 200, "T38 held listing: owner confirms email + name + phone, then it's claimed", [ a38.status, c38.status, bad38.status, ok38.status, act38.activated_at, a38b.status ].join(" "));
   sql("DELETE FROM businesses WHERE ghl_id LIKE 'GC%'"); sql("DELETE FROM dup_hidden WHERE ghl_id LIKE 'GC%'"); sql("DELETE FROM slug_redirects WHERE ghl_id LIKE 'GC%'");
   sql("DELETE FROM businesses WHERE ghl_id LIKE 'SC%'");
   console.log(`\n${n - fails}/${n} passed`);

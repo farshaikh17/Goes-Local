@@ -2818,8 +2818,6 @@ const LISTING_VERIFICATION_TIERS = {
   "listing verified pro": "pro"
 };
 
-const OWNER_DETAILS = [ [ "Owner Name", [ "owner name" ] ], [ "Owner Phone", [ "owner phone", "owner phone number" ] ], [ "Owner Email", [ "owner email", "owner e-mail", "owneremail" ] ] ];
-
 async function applyListingVerification(env, DB, cid) {
   if (!DB || !cid) return {
     ok: false,
@@ -2849,23 +2847,6 @@ async function applyListingVerification(env, DB, cid) {
     const row = await DB.prepare("SELECT claimed FROM businesses WHERE ghl_id=?1").bind(cid).first();
     hold = !req && !(row && row.claimed);
   } catch {}
-  if (hold) {
-    // A cold-call Verified must say who the owner is (Eric, 27 Oct): no invite and no hold until Owner Name, Owner Phone
-    // and Owner Email are filled. A field this account doesn't have yet isn't asked for.
-    const gaps = OWNER_DETAILS.filter(([ , keys ]) => fieldId(m, ...keys) && !keys.some(k => String(P(v, k) || "").trim())).map(([ label ]) => label);
-    if (gaps.length) {
-      await ghlAddTag(env, cid, [ "owner-details-missing" ]).catch(() => {});
-      await ghlNote(env, cid, `Marked Listing Verified, but ${gaps.join(" and ")} ${gaps.length > 1 ? "are" : "is"} empty, so no invite was sent and the listing is not claimed. Fill in Owner Name, Owner Phone and Owner Email, then set Listing Verification again.`).catch(() => {});
-      return {
-        ok: true,
-        cid: cid,
-        tier: tier,
-        handled: "owner-details-missing",
-        missing: gaps
-      };
-    }
-    await ghlRemoveTag(env, cid, [ "owner-details-missing" ]).catch(() => {});
-  }
   const addTags = hold ? [ "business", "awaiting-owner-login" ] : [ "business", "claimed", "Recently Claimed" ];
   const removeTags = hold ? [ "claimed", "Recently Claimed" ] : [];
   if (!hold) {
@@ -3098,7 +3079,17 @@ async function ghlNote(env, cid, body) {
 }
 
 // First sign-in by an owner whose listing a rep marked Verified: now it counts — claimed + paid tags, listing claimed.
-async function activateOwner(env, email) {
+// Listings a sales "Listing Verified" is holding for this signed-in email (Eric, 27 Oct: sales often only get the Owner
+// Email, so the owner confirms that email, their name and phone on /manage/confirm before the listing counts as claimed).
+async function pendingOwner(DB, email) {
+  try {
+    return (await DB.prepare("SELECT o.ghl_id, b.name FROM owner_pending o JOIN businesses b ON b.ghl_id=o.ghl_id WHERE o.email=?1 AND o.activated_at IS NULL").bind(NRM(email)).all()).results || [];
+  } catch {
+    return [];
+  }
+}
+
+async function activateOwner(env, email, who) {
   const DB = getDB(env), em = NRM(email);
   if (!DB || !em) return 0;
   let rows = [];
@@ -3124,7 +3115,7 @@ async function activateOwner(env, email) {
       }
       await DB.prepare("UPDATE businesses SET claimed_at=?1 WHERE ghl_id=?2 AND claimed_at IS NULL").bind(Date.now(), r.ghl_id).run();
       await ghlAddTag(env, r.ghl_id, [ "owner-email-verified" ]).catch(() => {});
-      await ghlNote(env, r.ghl_id, `The owner (${em}) signed in for the first time on ${new Date().toISOString().slice(0, 10)} with the code we emailed, so ${em} is verified as the Owner Email. The listing now counts as claimed${r.tier === "verified" ? "" : " (" + r.tier + ")"}.`);
+      await ghlNote(env, r.ghl_id, `The owner (${em}) signed in for the first time on ${new Date().toISOString().slice(0, 10)} with the code we emailed, so ${em} is verified as the Owner Email${who && who.name ? `. They confirmed Owner Name ${who.name} and Owner Phone ${who.phone}` : ""}. The listing now counts as claimed${r.tier === "verified" ? "" : " (" + r.tier + ")"}.`);
       n++;
     } catch (e) {
       console.log("activateOwner failed for " + r.ghl_id + ": " + e.message);
@@ -5272,11 +5263,6 @@ async function startSession(env, email, name) {
   }), {
     expirationTtl: AUTH.SESSION_DAYS * 86400
   });
-  try {
-    await activateOwner(env, email);
-  } catch (e) {
-    console.log("activateOwner: " + e.message);
-  }
   return mkCookie(env, sid);
 }
 
@@ -7402,6 +7388,13 @@ const NOTICE = (d, title, msg, cta, href) => PAGE(d, {
   desc: msg,
   can: S.dom + "/",
   body: `<div class="wrap" style="padding:80px 24px;text-align:center;max-width:620px">\n<h1>${E(title)}</h1><p style="color:${T.body};margin:14px 0 24px">${E(msg)}</p>\n<a class="btn btn-p btn-lg" href="${href || "/"}">${E(cta || "Back to the directory")}</a></div>`
+});
+
+const CONFIRMOWNER = (d, email, rows, v, err) => PAGE(d, {
+  title: `Confirm your details | ${S.brand}`,
+  desc: "Confirm the owner's details to finish claiming your listing.",
+  can: S.dom + "/manage/confirm",
+  body: `<div class="wrap" style="max-width:460px;padding:60px 24px">\n<div class="kicker">One last step</div>\n<h1 style="margin:10px 0 6px">Confirm you're the owner</h1>\n<p style="color:${T.muted};margin-bottom:20px">To finish claiming <b style="color:${T.navy}">${rows.map(r => E(r.name)).join("</b>, <b style=\"color:" + T.navy + "\">")}</b>, confirm your email and tell us who to contact about the listing.</p>\n${err ? `<div class="note note-err">${E(err)}</div>` : ""}\n<form method="POST" action="/manage/confirm">\n<div class="fld2"><label for="ce">Your email <span style="color:${T.muted};font-weight:400">(type it again)</span></label><input id="ce" name="email" type="email" required autocomplete="off" placeholder="${E(email)}" value="${E(v.email || "")}"></div>\n<div class="fld2"><label for="cn">Owner's full name</label><input id="cn" name="name" required autocomplete="name" placeholder="First and last name" value="${E(v.name || "")}"></div>\n<div class="fld2"><label for="cp">Owner's phone</label><input id="cp" name="phone" type="tel" required autocomplete="tel" placeholder="(555) 555-0100" value="${E(v.phone || "")}"></div>\n<button class="btn btn-p btn-w">Confirm and manage my listing</button>\n<p style="font-size:12px;color:${T.muted};text-align:center;margin:10px 0 0">We only use these to reach you about your listing. They're never shown on the site.</p>\n</form></div>`
 });
 
 const PASSWORDPAGE = (d, email, msg, err) => PAGE(d, {
@@ -11717,9 +11710,51 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       if (!s) return Response.redirect(AUTH.SITE_URL + "/login", 302);
       return Response.redirect(AUTH.SITE_URL + "/account", 302);
     }
+    if (u.pathname === "/manage/confirm") {
+      const s = await session(env, req);
+      if (!s) return Response.redirect(AUTH.SITE_URL + "/login?next=" + encodeURIComponent("/manage/confirm"), 302);
+      const d = await SHELL(DB, env);
+      const rows = await pendingOwner(DB, s.email);
+      if (!rows.length) return Response.redirect(AUTH.SITE_URL + "/account", 302);
+      if (req.method === "POST") {
+        const f = await req.formData();
+        const em = NRM(String(f.get("email") || ""));
+        const name = String(f.get("name") || "").trim().replace(/\s+/g, " ").slice(0, 80);
+        const phone = String(f.get("phone") || "").trim().slice(0, 30);
+        const err = em !== NRM(s.email) ? `Type the same email you signed in with (${s.email}).` : name.split(" ").length < 2 ? "Enter your first and last name." : !NPHONE(phone) ? "Enter a phone number we can reach you on." : "";
+        if (err) return R2(CONFIRMOWNER(d, s.email, rows, { email: em, name: name, phone: phone }, err));
+        try {
+          const m = await fields(env);
+          const cf = [ [ fieldId(m, "owner name"), name ], [ fieldId(m, "owner phone", "owner phone number"), phone ] ].filter(([ fid ]) => fid).map(([ id, value ]) => ({ id: id, value: value }));
+          // Custom fields only in this call (GHL drops custom fields sent alongside native ones); activateOwner sets Owner Email.
+          if (cf.length) for (const r of rows) await fetch(`${API}/contacts/${r.ghl_id}`, {
+            method: "PUT",
+            headers: {
+              ...H(env),
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              customFields: cf
+            })
+          });
+        } catch (e) {
+          console.log("confirm owner details failed: " + e.message);
+        }
+        await activateOwner(env, s.email, { name: name, phone: phone });
+        return Response.redirect(AUTH.SITE_URL + "/account?claimed=1", 302);
+      }
+      let pre = { email: "", name: "", phone: "" };
+      try {
+        const m = await fields(env), c = await ghlGetContact(env, rows[0].ghl_id);
+        const v = c ? cv(c, m) : {};
+        pre = { email: "", name: P(v, "owner name") || "", phone: P(v, "owner phone", "owner phone number") || "" };
+      } catch {}
+      return R2(CONFIRMOWNER(d, s.email, rows, pre, ""));
+    }
     if (u.pathname === "/account") {
       const s = await session(env, req);
       if (!s) return Response.redirect(AUTH.SITE_URL + "/login", 302);
+      if ((await pendingOwner(DB, s.email)).length) return Response.redirect(AUTH.SITE_URL + "/manage/confirm", 302);
       const d = await SHELL(DB, env);
       const ownIds = await ownedIds(env, s.email);
       let businesses = [];
@@ -12065,6 +12100,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
     if (u.pathname === "/manage/hub" && req.method === "GET") {
       const s = await session(env, req);
       if (!s) return Response.redirect(AUTH.SITE_URL + "/login", 302);
+      if ((await pendingOwner(DB, s.email)).length) return Response.redirect(AUTH.SITE_URL + "/manage/confirm", 302);
       const d = await SHELL(DB, env);
       const id = u.searchParams.get("id") || "";
       const ids = await ownedIds(env, s.email);
