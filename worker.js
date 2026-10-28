@@ -1833,6 +1833,8 @@ async function migrate(DB, env) {
   } catch {}
   try {
     await DB.prepare("CREATE TABLE IF NOT EXISTS dup_hidden(ghl_id TEXT PRIMARY KEY, keep_id TEXT NOT NULL, cs TEXT, slug TEXT, name TEXT DEFAULT '', created_at INTEGER)").run();
+    await DB.prepare("CREATE TABLE IF NOT EXISTS competitor_hidden(ghl_id TEXT PRIMARY KEY, name TEXT DEFAULT '', cs TEXT, slug TEXT, sub TEXT DEFAULT '', created_at INTEGER)").run();
+    await DB.prepare("CREATE TABLE IF NOT EXISTS business_team(ghl_id TEXT NOT NULL, email TEXT NOT NULL, added_by TEXT DEFAULT '', added_at INTEGER, PRIMARY KEY(ghl_id, email))").run();
   } catch {}
   try {
     await DB.prepare("ALTER TABLE pending_email_invites ADD COLUMN last_checked_at INTEGER").run();
@@ -2368,6 +2370,15 @@ async function syncStep(env, DB, maxPages) {
         });
         if (unhide.length) await DB.batch(unhide);
       }
+      {
+        const tagsOf = new Map(page.contacts.map(c => [ c.id, c.tags ]));
+        const comp = pageList.filter(b => COMPETITOR(b, tagsOf.get(b.id)));
+        if (comp.length) {
+          pageList = pageList.filter(b => !comp.includes(b));
+          await DB.batch(comp.flatMap(b => [ DB.prepare("INSERT OR REPLACE INTO competitor_hidden(ghl_id,name,cs,slug,sub,created_at) VALUES(?1,?2,?3,?4,?5,?6)").bind(b.id, b.name || "", b.cs, b.slug || "", b.sub || "", Date.now()), DB.prepare("DELETE FROM businesses WHERE ghl_id=?1").bind(b.id) ])).catch(e => console.log("sync: competitor hide failed: " + e.message));
+        }
+        if (pageList.length) await DB.prepare(`DELETE FROM competitor_hidden WHERE ghl_id IN (${pageList.map((_, i) => "?" + (i + 1)).join(",")})`).bind(...pageList.map(b => b.id)).run().catch(() => {});
+      }
       for (const b of pageList) {
         const prior = priorByGhlId.get(b.id);
         const nameChanged = prior && (prior.name || "").trim() !== (b.name || "").trim();
@@ -2797,6 +2808,12 @@ async function insertOne(env, DB, ghlId, pre) {
   }
   if (!c) return false;
   const b = norm(c, m);
+  if (COMPETITOR(b, c.tags)) {
+    await DB.batch([ DB.prepare("INSERT OR REPLACE INTO competitor_hidden(ghl_id,name,cs,slug,sub,created_at) VALUES(?1,?2,?3,?4,?5,?6)").bind(ghlId, b.name || "", b.cs, b.slug || "", b.sub || "", Date.now()), DB.prepare("DELETE FROM businesses WHERE ghl_id=?1").bind(ghlId) ]).catch(() => {});
+    console.log("insertOne: " + ghlId + " (" + b.name + ") is a competitor — kept off the directory");
+    return false;
+  }
+  await DB.prepare("DELETE FROM competitor_hidden WHERE ghl_id=?1").bind(ghlId).run().catch(() => {});
   try {
     await DB.prepare("DELETE FROM dup_hidden WHERE ghl_id=?1").bind(ghlId).run();
   } catch {}
@@ -3672,7 +3689,60 @@ async function pendingEmailInviteBatch(env, DB, maxUpdates) {
   };
 }
 
+// A team member signs in through the business's contact but has a password of their own, kept here rather than in that
+// contact's Owner Credentials (which is the owner's). Anyone with their own GHL contact or who owns a listing is not one.
+// GHL keeps a copy of the team on the business contact: the "Team Members" field (when the account has it) and a note.
+async function teamToGhl(env, DB, id, note) {
+  try {
+    const list = ((await DB.prepare("SELECT email FROM business_team WHERE ghl_id=?1 ORDER BY added_at").bind(id).all()).results || []).map(r => r.email).join(", ");
+    const fid = fieldId(await fields(env), "team members");
+    if (fid) await fetch(`${API}/contacts/${id}`, {
+      method: "PUT",
+      headers: {
+        ...H(env),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        customFields: [ {
+          id: fid,
+          value: list
+        } ]
+      })
+    });
+    await ghlNote(env, id, note);
+  } catch (e) {
+    console.log("team → GHL failed: " + e.message);
+  }
+}
+
+async function teamOnly(env, email) {
+  const DB = getDB(env), em = NRM(email);
+  if (!DB || !em) return false;
+  try {
+    if (!await DB.prepare("SELECT 1 FROM business_team WHERE email=?1 LIMIT 1").bind(em).first()) return false;
+    if (await DB.prepare("SELECT 1 FROM businesses WHERE owner_email=?1 OR email=?1 LIMIT 1").bind(em).first()) return false;
+    const cid = await ghlSearchEmail(env, em), c = cid ? await ghlGetContact(env, cid) : null;
+    return !(c && NRM(c.email || "") === em);
+  } catch {
+    return false;
+  }
+}
+
+async function setPasswordFor(env, email, cid, password) {
+  if (await teamOnly(env, email)) {
+    const KV = KVOF(env);
+    if (!KV) return false;
+    await KV.put("tpw:" + NRM(email), await pwHash(password));
+    return true;
+  }
+  return cid ? await ghlSetPassword(env, cid, password) : false;
+}
+
 async function ghlCheckPassword(env, email, password) {
+  if (await teamOnly(env, email)) {
+    const st = KVOF(env) && await KVOF(env).get("tpw:" + NRM(email));
+    return st ? pwVerify(password, st) : false;
+  }
   const cid = await ghlFindContactByEmail(env, email);
   if (!cid) return false;
   const c = await ghlGetContact(env, cid);
@@ -3712,6 +3782,8 @@ async function ownedIds(env, email) {
     const em = NRM(email), dom = DOMOF(em);
     const own = (await DB.prepare("SELECT ghl_id FROM businesses WHERE owner_email=?1").bind(em).all()).results || [];
     const ids = own.map(x => x.ghl_id);
+    // People the owner added on the Team tab manage the listing with their own sign-in (Eric, 28 Oct).
+    for (const t of (await DB.prepare("SELECT ghl_id FROM business_team WHERE email=?1").bind(em).all().catch(() => ({}))).results || []) if (!ids.includes(t.ghl_id)) ids.push(t.ghl_id);
     if (dom && !FREEMAIL.has(dom) && !/\.(edu|gov|mil)$/.test(dom)) {
       const team = (await DB.prepare("SELECT ghl_id,web FROM businesses WHERE owner_email LIKE ?1 AND owner_email<>?2").bind("%@" + dom, em).all()).results || [];
       for (const t of team) if (OWNSITE(t.web, dom) && !ids.includes(t.ghl_id)) ids.push(t.ghl_id);
@@ -3989,12 +4061,76 @@ async function sendEmail(env, to, subject, html, text, contactId, opts) {
 async function bizContactFor(env, email) {
   const DB = getDB(env), em = NRM(email);
   if (!DB || !em) return null;
-  for (const q of [ "SELECT ghl_id FROM businesses WHERE owner_email=?1", "SELECT ghl_id FROM owner_pending WHERE email=?1", "SELECT ghl_id FROM businesses WHERE email=?1" ]) try {
+  for (const q of [ "SELECT ghl_id FROM businesses WHERE owner_email=?1", "SELECT ghl_id FROM owner_pending WHERE email=?1", "SELECT ghl_id FROM businesses WHERE email=?1", "SELECT ghl_id FROM business_team WHERE email=?1" ]) try {
     const r = await DB.prepare(q + " LIMIT 1").bind(em).first();
     if (r && r.ghl_id) return r.ghl_id;
   } catch {}
   return null;
 }
+
+// Competitors of Mianro Systems — marketing, advertising, websites, SEO, social media, PR, business software — are kept off
+// the directory (Eric, 28 Oct). A contact tagged "not-competitor" always stays, and a paying listing is never hidden.
+const COMPETE_SUB = /\b(marketing|market researcher|advertising agency|website designer|web designer|web design|web development|website development|seo|search engine|social media|digital agency|public relations|pr firm|software company|branding agency)\b/i;
+const COMPETE_NAME = /\b(marketing|seo|web ?design|websites?|digital agency|media agency)\b/i;
+const COMPETITOR = (b, tags) => {
+  if ((tags || []).some(t => String(t).trim().toLowerCase() === "not-competitor") || b.premium || b.plus) return false;
+  return /^marketing\b/i.test(b.cat || "") || COMPETE_SUB.test(b.sub || "") || COMPETE_NAME.test(b.name || "");
+};
+
+// Lead Source for anyone who comes in through the site, e.g. "Website – Claim form (Google search)" (Eric, 28 Oct: it was
+// blank for every website lead). Only an empty Lead Source is filled, so imported values like "Google" stay.
+const ATTR = req => {
+  try {
+    const m = (req.headers.get("Cookie") || "").match(/(?:^|; )gl_attr=([^;]*)/);
+    return m ? JSON.parse(decodeURIComponent(m[1])) : {};
+  } catch {
+    return {};
+  }
+};
+
+const CHANNEL = a => {
+  const src = String(a && a.source || "").toLowerCase().trim(), med = String(a && a.medium || "").toLowerCase();
+  if (!src || src === "direct") return "Direct";
+  if (med === "email") return "Email";
+  const nm = src.replace(/^(www|m|l|lm)\./, "").split(".")[0];
+  const name = nm.charAt(0).toUpperCase() + nm.slice(1);
+  if (med === "organic") return name + " search";
+  if (/cpc|ppc|paid/.test(med)) return name + " ads";
+  return name;
+};
+
+async function setLeadSource(env, cid, form, req) {
+  if (!cid) return;
+  try {
+    const m = await fields(env), fid = fieldId(m, "lead source");
+    if (!fid) return;
+    const c = await ghlGetContact(env, cid);
+    if (!c || String(P(cv(c, m), "lead source") || "").trim()) return;
+    await fetch(`${API}/contacts/${cid}`, {
+      method: "PUT",
+      headers: {
+        ...H(env),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        customFields: [ {
+          id: fid,
+          value: `Website – ${form} (${CHANNEL(ATTR(req))})`
+        } ]
+      })
+    });
+  } catch (e) {
+    console.log("lead source: " + e.message);
+  }
+}
+
+const YEAR = v => {
+  const y = parseInt(String(v || "").trim(), 10);
+  return y >= 1800 && y <= (new Date).getFullYear() ? y : 0;
+};
+
+// Owner details are only for checking who owns the business — said plainly before the form (Eric, 28 Oct).
+const PRIVBOX = what => `<div style="display:flex;gap:12px;background:${T.tealSoft};border:2px solid ${T.teal};border-radius:14px;padding:13px 15px;margin:4px 0 16px"><span style="font-size:20px;line-height:1.1" aria-hidden="true">🔒</span><div><b style="display:block;color:${T.navy};font-size:14.5px;margin-bottom:2px">Private — never shown on the directory</b><span style="font-size:13px;color:${T.body};line-height:1.45">${what}</span></div></div>`;
 
 async function isBizContact(DB, cid) {
   try {
@@ -5492,6 +5628,18 @@ const EMAIL_TEMPLATES = {
     title: "Your listing is ready — it takes 30 seconds",
     body: "<p style=\"margin:0 0 12px\">Your business was recently added to {{brand}}, the largest local directory in {{city}}, so local customers in {{city}} can find you, which means more business for you.</p><p style=\"margin:0 0 12px\">Your free listing for <b>{{business}}</b> is live. Create your free account in 30 seconds to update it any time:</p><table role=\"presentation\" style=\"border-collapse:collapse;font-size:14.5px;color:#1B2A3A\"><tr><td style=\"width:26px;padding:5px 0;color:#2E8B8B;font-weight:bold\">✓</td><td style=\"padding:5px 0\">Add your logo, photos and opening hours</td></tr><tr><td style=\"padding:5px 0;color:#2E8B8B;font-weight:bold\">✓</td><td style=\"padding:5px 0\">Get customer messages straight to your inbox</td></tr><tr><td style=\"padding:5px 0;color:#2E8B8B;font-weight:bold\">✓</td><td style=\"padding:5px 0\">Keep your services and details up to date</td></tr></table><div style=\"background:#FBF5EA;border-radius:12px;padding:12px 14px;font-size:13px;color:#42556B;margin-top:16px\">Use this email to sign in: <b style=\"color:#12263F\">{{email}}</b><br>Already set a password? Just log in with the same email.</div>",
     btn: "Manage my listing →",
+    noExpiry: true
+  },
+
+  team_invite: {
+    label: "Team member added to a listing",
+    description: "Sent when a business owner adds someone on the Team tab so they can manage the listing with their own sign-in.",
+    vars: [ "business", "brand", "email", "owner" ],
+    subject: "You've been added to {{business}} on {{brand}}",
+    badge: "TEAM ACCESS · {{brand}}",
+    title: "You can now manage {{business}}",
+    body: "<p style=\"margin:0 0 12px\">{{owner}} added you to the team for <b>{{business}}</b> on {{brand}}. You can update the listing and read customer messages with your own sign-in — no shared password.</p><div style=\"background:#FBF5EA;border-radius:12px;padding:12px 14px;font-size:13px;color:#42556B;margin-top:16px\">Sign in with: <b style=\"color:#12263F\">{{email}}</b><br>First time? Create your account with this email — we'll send you a code.</div>",
+    btn: "Sign in to manage →",
     noExpiry: true
   },
 
@@ -7248,11 +7396,12 @@ const ADD = (d, x) => {
 <div class="fld2"><label for="ba">Street address *</label><input id="ba" name="address" required></div>
 <div class="lpx-2"><div class="fld2"><label for="bh2">${E(AREA.one)}</label><select id="bh2" name="hood">
 <option value="">Select ${E(AREA.lo)}</option>${HOODS_LIVE().map(h => `<option>${E(h.name)}</option>`).join("")}<option>Other</option></select></div>
-<div class="fld2"><label for="byrs">Years in business</label><input id="byrs" name="yrs" placeholder="e.g. 2015 or 8"></div></div>
+<div class="fld2"><label for="byrs">Year established *</label><input id="byrs" name="yrs" type="number" required min="1800" max="${(new Date).getFullYear()}" placeholder="e.g. 2015"></div></div>
 <div class="fld2"><label for="bw">Website (optional)</label><input id="bw" name="website" placeholder="yourbusiness.com"></div>
 <div class="fld2"><label for="bs">Services offered</label><textarea id="bs" name="services" rows="2" placeholder="Emergency leak repair, drain cleaning, water heater install…"></textarea></div>
 <div class="fld2"><label for="bd">Short description</label><textarea id="bd" name="details" rows="2"></textarea></div>
 <p class="lpx-own"><b>Who should we contact about this listing?</b></p>
+${PRIVBOX("Your name, email and phone are only used to verify ownership of this listing. They are not published.")}
 <div class="fld2"><label for="cn">Your name *</label><input id="cn" name="owner_name" required></div>
 <div class="lpx-2"><div class="fld2"><label for="oe">Your email *</label><input id="oe" name="owner_email" type="email" required></div>
 <div class="fld2"><label for="op">Your phone *</label><input id="op" name="owner_phone" type="tel" required></div></div>
@@ -7313,7 +7462,7 @@ const CLAIMSTART = (d, b, err) => PAGE(d, {
   title: `Claim ${b.name} | ${S.brand}`,
   desc: `Verify ownership of ${b.name}.`,
   can: S.dom + "/claim",
-  body: `<div class="wrap">\n<nav class="crumb"><a href="/">Home</a> / <a href="/claim">Claim</a> / ${E(b.name)}</nav>\n<div style="padding:14px 0 26px"><h1>Claim ${E(b.name)}</h1>\n<p style="color:${T.muted};margin-top:8px">${E(b.addr || S.city)}</p></div>\n<div class="split"><div class="blk"><h2>How verification works</h2>\n<p>Once you submit this form, we'll text a 6-digit code to the business phone on this listing (or email it to the business email we have on file). Enter it and the listing is yours straight away — no waiting for a call. Can't get the code? Our team will check your claim instead.</p>\n${b.claimed ? `<div class="note note-warn"><b>This listing is already claimed.</b> Your request will still go through, and the current owner will be notified.</div>` : ""}\n</div>\n<aside><div class="blk"><h2>Claim this listing</h2>\n${err ? `<div class="note note-err">${E(err)}</div>` : ""}\n<form method="POST" action="/api/claim" id="claimForm"><input type="hidden" name="id" value="${E(b.id)}">\n<input type="hidden" name="utm_source" id="cfSrc"><input type="hidden" name="utm_medium" id="cfMed">\n<input type="hidden" name="utm_campaign" id="cfCam"><input type="hidden" name="landing_page" id="cfLand">\n<script>(function(){try{\nvar m=document.cookie.match(/(?:^|; )gl_attr=([^;]*)/);\nif(!m)return;var a=JSON.parse(decodeURIComponent(m[1]));\nvar set=function(id,v){var e=document.getElementById(id);if(e)e.value=v||""};\nset("cfSrc",a.source);set("cfMed",a.medium);set("cfCam",a.campaign);set("cfLand",a.landing)\n}catch(e){}})();<\/script>\n<div class="fld2"><label for="n1">Your name *</label><input id="n1" name="name" required></div>\n<div class="fld2"><label for="r1">Your role *</label><select id="r1" name="role" required>\n<option>Owner</option><option>Manager</option><option>Other Employee</option></select></div>\n<div class="fld2"><label for="e1">Your email *</label><input id="e1" name="email" type="email" required placeholder="you@yourbusiness.com"></div>\n<p style="font-size:11.5px;color:${T.faint};margin:-6px 0 2px">You'll still sign in with this email, whatever your role — it's just who we're talking to.</p>\n<div class="fld2"><label for="p1">Your phone *</label><input id="p1" name="phone" type="tel" required placeholder="In case we need to reach you"></div>\n<div id="ownerFields" hidden>\n<div class="note note-warn" style="margin-bottom:12px">Since you're not the owner, we need the owner's own contact details before this claim can be reviewed. <b>This is mandatory</b> — a claim submitted as Manager or Other Employee without it won't be approved.</div>\n<div class="fld2"><label for="on1">Owner's name *</label><input id="on1" name="owner_name" placeholder="The business owner's full name"></div>\n<div class="fld2"><label for="oe1">Owner's email *</label><input id="oe1" name="owner_email" type="email" placeholder="owner@yourbusiness.com"></div>\n<div class="fld2"><label for="op1">Owner's phone *</label><input id="op1" name="owner_phone" type="tel" placeholder="A number we can reach the owner on"></div>\n<div class="fld2" style="flex-direction:row;align-items:flex-start;gap:8px"><input id="disc1" name="disclaimer" type="checkbox" style="margin-top:3px;width:auto"><label for="disc1" style="font-size:12.5px;font-weight:400">I confirm the owner's details above are accurate and that the owner is aware I'm submitting this claim on their behalf. *</label></div>\n</div>\n<div class="fld2"><label for="d1">Anything we should know?</label><textarea id="d1" name="details"></textarea></div>\n<button class="btn btn-p btn-w">Submit claim request</button></form>\n<script>(function(){\nvar cf=document.getElementById("claimForm");if(cf)cf.addEventListener("submit",function(){var b=cf.querySelector("button.btn-p");if(b){b.disabled=true;b.textContent="Sending…"}});\nvar sel=document.getElementById("r1"),box=document.getElementById("ownerFields");\nif(!sel||!box)return;\nvar reqIds=["on1","oe1","op1","disc1"];\nfunction apply(){\n  var needsOwner=sel.value==="Manager"||sel.value==="Other Employee";\n  box.hidden=!needsOwner;\n  reqIds.forEach(function(id){var el=document.getElementById(id);if(el)el.required=needsOwner});\n}\nsel.addEventListener("change",apply);\napply();\n})();<\/script></div></aside>\n</div></div>`
+  body: `<div class="wrap">\n<nav class="crumb"><a href="/">Home</a> / <a href="/claim">Claim</a> / ${E(b.name)}</nav>\n<div style="padding:14px 0 26px"><h1>Claim ${E(b.name)}</h1>\n<p style="color:${T.muted};margin-top:8px">${E(b.addr || S.city)}</p></div>\n<div class="split"><div class="blk"><h2>How verification works</h2>\n<p>Once you submit this form, we'll text a 6-digit code to the business phone on this listing (or email it to the business email we have on file). Enter it and the listing is yours straight away — no waiting for a call. Can't get the code? Our team will check your claim instead.</p>\n${b.claimed ? `<div class="note note-warn"><b>This listing is already claimed.</b> Your request will still go through, and the current owner will be notified.</div>` : ""}\n</div>\n<aside><div class="blk"><h2>Claim this listing</h2>\n${err ? `<div class="note note-err">${E(err)}</div>` : ""}\n<form method="POST" action="/api/claim" id="claimForm"><input type="hidden" name="id" value="${E(b.id)}">\n<input type="hidden" name="utm_source" id="cfSrc"><input type="hidden" name="utm_medium" id="cfMed">\n<input type="hidden" name="utm_campaign" id="cfCam"><input type="hidden" name="landing_page" id="cfLand">\n<script>(function(){try{\nvar m=document.cookie.match(/(?:^|; )gl_attr=([^;]*)/);\nif(!m)return;var a=JSON.parse(decodeURIComponent(m[1]));\nvar set=function(id,v){var e=document.getElementById(id);if(e)e.value=v||""};\nset("cfSrc",a.source);set("cfMed",a.medium);set("cfCam",a.campaign);set("cfLand",a.landing)\n}catch(e){}})();<\/script>\n${PRIVBOX("The names, emails and phone numbers on this form are only used to verify ownership of this listing. They are not published.")}\n<div class="fld2"><label for="n1">Your name *</label><input id="n1" name="name" required></div>\n<div class="fld2"><label for="r1">Your role *</label><select id="r1" name="role" required>\n<option>Owner</option><option>Manager</option><option>Other Employee</option></select></div>\n<div class="fld2"><label for="e1">Your email *</label><input id="e1" name="email" type="email" required placeholder="you@yourbusiness.com"></div>\n<p style="font-size:11.5px;color:${T.faint};margin:-6px 0 2px">You'll still sign in with this email, whatever your role — it's just who we're talking to.</p>\n<div class="fld2"><label for="p1">Your phone *</label><input id="p1" name="phone" type="tel" required placeholder="In case we need to reach you"></div>\n<div class="fld2"><label for="y1">Year established *</label><input id="y1" name="yrs" type="number" required min="1800" max="${(new Date).getFullYear()}" placeholder="e.g. 2015"></div>\n<div id="ownerFields" hidden>\n<div class="note note-warn" style="margin-bottom:12px">Since you're not the owner, we need the owner's own contact details before this claim can be reviewed. <b>This is mandatory</b> — a claim submitted as Manager or Other Employee without it won't be approved.</div>\n<div class="fld2"><label for="on1">Owner's name *</label><input id="on1" name="owner_name" placeholder="The business owner's full name"></div>\n<div class="fld2"><label for="oe1">Owner's email *</label><input id="oe1" name="owner_email" type="email" placeholder="owner@yourbusiness.com"></div>\n<div class="fld2"><label for="op1">Owner's phone *</label><input id="op1" name="owner_phone" type="tel" placeholder="A number we can reach the owner on"></div>\n<div class="fld2" style="flex-direction:row;align-items:flex-start;gap:8px"><input id="disc1" name="disclaimer" type="checkbox" style="margin-top:3px;width:auto"><label for="disc1" style="font-size:12.5px;font-weight:400">I confirm the owner's details above are accurate and that the owner is aware I'm submitting this claim on their behalf. *</label></div>\n</div>\n<div class="fld2"><label for="d1">Anything we should know?</label><textarea id="d1" name="details"></textarea></div>\n<button class="btn btn-p btn-w">Submit claim request</button></form>\n<script>(function(){\nvar cf=document.getElementById("claimForm");if(cf)cf.addEventListener("submit",function(){var b=cf.querySelector("button.btn-p");if(b){b.disabled=true;b.textContent="Sending…"}});\nvar sel=document.getElementById("r1"),box=document.getElementById("ownerFields");\nif(!sel||!box)return;\nvar reqIds=["on1","oe1","op1","disc1"];\nfunction apply(){\n  var needsOwner=sel.value==="Manager"||sel.value==="Other Employee";\n  box.hidden=!needsOwner;\n  reqIds.forEach(function(id){var el=document.getElementById(id);if(el)el.required=needsOwner});\n}\nsel.addEventListener("change",apply);\napply();\n})();<\/script></div></aside>\n</div></div>`
 });
 
 const LOGIN = (d, opts) => {
@@ -7403,7 +7552,7 @@ const CONFIRMOWNER = (d, email, rows, v, err) => PAGE(d, {
   title: `Confirm your details | ${S.brand}`,
   desc: "Confirm the owner's details to finish claiming your listing.",
   can: S.dom + "/manage/confirm",
-  body: `<div class="wrap" style="max-width:460px;padding:60px 24px">\n<div class="kicker">One last step</div>\n<h1 style="margin:10px 0 6px">Confirm you're the owner</h1>\n<p style="color:${T.muted};margin-bottom:20px">To finish claiming <b style="color:${T.navy}">${rows.map(r => E(r.name)).join("</b>, <b style=\"color:" + T.navy + "\">")}</b>, confirm your email and tell us who to contact about the listing.</p>\n${err ? `<div class="note note-err">${E(err)}</div>` : ""}\n<form method="POST" action="/manage/confirm">\n<div class="fld2"><label for="ce">Your email <span style="color:${T.muted};font-weight:400">(type it again)</span></label><input id="ce" name="email" type="email" required autocomplete="off" placeholder="${E(email)}" value="${E(v.email || "")}"></div>\n<div class="fld2"><label for="cn">Owner's full name</label><input id="cn" name="name" required autocomplete="name" placeholder="First and last name" value="${E(v.name || "")}"></div>\n<div class="fld2"><label for="cp">Owner's phone</label><input id="cp" name="phone" type="tel" required autocomplete="tel" placeholder="(555) 555-0100" value="${E(v.phone || "")}"></div>\n<button class="btn btn-p btn-w">Confirm and manage my listing</button>\n<p style="font-size:12px;color:${T.muted};text-align:center;margin:10px 0 0">We only use these to reach you about your listing. They're never shown on the site.</p>\n</form></div>`
+  body: `<div class="wrap" style="max-width:460px;padding:60px 24px">\n<div class="kicker">One last step</div>\n<h1 style="margin:10px 0 14px">Confirm you're the owner</h1>\n${PRIVBOX("We only use the owner's name, email and phone to verify that you own this business. They are not published on your listing.")}\n<p style="color:${T.muted};margin-bottom:20px">To finish claiming <b style="color:${T.navy}">${rows.map(r => E(r.name)).join("</b>, <b style=\"color:" + T.navy + "\">")}</b>, confirm your email and tell us who to contact about the listing.</p>\n${err ? `<div class="note note-err">${E(err)}</div>` : ""}\n<form method="POST" action="/manage/confirm">\n<div class="fld2"><label for="ce">Your email <span style="color:${T.muted};font-weight:400">(type it again)</span></label><input id="ce" name="email" type="email" required autocomplete="off" placeholder="${E(email)}" value="${E(v.email || "")}"></div>\n<div class="fld2"><label for="cn">Owner's full name</label><input id="cn" name="name" required autocomplete="name" placeholder="First and last name" value="${E(v.name || "")}"></div>\n<div class="fld2"><label for="cp">Owner's phone</label><input id="cp" name="phone" type="tel" required autocomplete="tel" placeholder="(555) 555-0100" value="${E(v.phone || "")}"></div>\n<div class="fld2"><label for="cy">Year established</label><input id="cy" name="yrs" type="number" required min="1800" max="${(new Date).getFullYear()}" placeholder="e.g. 2015" value="${E(v.yrs || "")}"></div>\n<button class="btn btn-p btn-w">Confirm and manage my listing</button>\n<p style="font-size:12px;color:${T.muted};text-align:center;margin:10px 0 0">We only use these to reach you about your listing. They're never shown on the site.</p>\n</form></div>`
 });
 
 const PASSWORDPAGE = (d, email, msg, err) => PAGE(d, {
@@ -7553,6 +7702,7 @@ async function hasPassword(env, email) {
   } catch {}
   let has;
   try {
+    if (await teamOnly(env, email)) return !!(KV && await KV.get("tpw:" + NRM(email)));
     const cid = await ghlFindContactByEmail(env, email);
     const c = cid ? await ghlGetContact(env, cid) : null;
     if (!c) return true;
@@ -7627,11 +7777,23 @@ const MANAGEUPDATES = (d, biz, list, followerCount, err) => PAGE(d, {
 // Owner "Manage" page (Eric approved v2, 6 Oct 2026): business card on top, one slim upgrade strip,
 // Reviews / Photos / Updates as real tabs (one panel at a time; all show without JS), paid extras as a
 // small "Unlock" line, plan/delete as quiet links at the bottom. Same sections and forms as before.
+// Team tab: the owner lets staff manage the listing with their own sign-in instead of sharing one (Eric, 28 Oct).
+const TEAMPANE = (biz, t) => {
+  const id = E(biz.id), row = (who, sub, right) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;background:#fff;border:1px solid ${T.line};border-radius:12px;padding:11px 14px;margin-bottom:8px;font-size:14px"><div style="min-width:0;overflow-wrap:anywhere">${who}${sub ? `<small style="display:block;color:${T.muted};font-size:12px">${sub}</small>` : ""}</div>${right}</div>`;
+  return `<div class="blk"><h2>Who can manage this listing</h2>
+<p style="color:${T.muted}">Add staff or a manager so they can sign in with <b>their own email</b> — no need to share your password.</p>
+${t.err ? `<div class="note note-err">${E(t.err)}</div>` : ""}${t.ok ? `<div class="note note-ok">${E(t.ok)}</div>` : ""}
+${row(E(t.ownerEmail || "The owner"), "", `<span style="font-size:11px;font-weight:700;background:${T.tealSoft};color:${T.teal};border-radius:999px;padding:3px 9px">Owner</span>`)}
+${(t.members || []).map(m => row(E(m.email), "Added " + new Date(m.added_at || 0).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), t.isOwner ? `<form method="POST" action="/manage/team" style="margin:0"><input type="hidden" name="id" value="${id}"><input type="hidden" name="action" value="remove"><input type="hidden" name="email" value="${E(m.email)}"><button style="background:none;border:0;color:#B3261E;font-weight:600;font-size:13px;cursor:pointer">Remove</button></form>` : "")).join("")}
+${t.isOwner ? `<form method="POST" action="/manage/team" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px"><input type="hidden" name="id" value="${id}"><input type="hidden" name="action" value="add"><input name="email" type="email" required placeholder="Their email address" style="flex:1;min-width:200px" autocomplete="off"><button class="btn btn-p">Add person</button></form>
+<p style="font-size:12.5px;background:${T.cream};border-radius:10px;padding:10px 12px;color:${T.muted};margin-top:14px">They get an email with a link to sign in. Team members can edit the listing and read messages. Only the owner can add or remove people.</p>` : `<p style="font-size:12.5px;color:${T.muted};margin-top:14px">Only the owner can add or remove people.</p>`}</div>`;
+};
+
 const MANAGEHUB = (d, biz, reviews, photos, updates, edit) => {
   edit = edit || {};
   const id = encodeURIComponent(biz.id);
   const plan = biz.plus ? "Pro plan" : biz.premium ? "Plus plan" : "Free plan";
-  const tabs = [ [ "listing", "Your listing", "" ], [ "reviews", "Reviews", reviews.pending.length ? `${reviews.pending.length} to review` : "" ], [ "photos", "Photos", photos.pending.length ? `${photos.pending.length} to review` : "" ], [ "updates", "Updates & offers", "" ] ];
+  const tabs = [ [ "listing", "Your listing", "" ], [ "reviews", "Reviews", reviews.pending.length ? `${reviews.pending.length} to review` : "" ], [ "photos", "Photos", photos.pending.length ? `${photos.pending.length} to review` : "" ], [ "updates", "Updates & offers", "" ], [ "team", "Team", "" ] ];
   const up = !biz.premium ? `<div><i>⭐</i><div><b>Get featured</b><span>Top of your category, logo &amp; extra photos — from $29/mo</span></div><a class="c" href="/manage/upgrade?id=${id}">Upgrade</a></div>`
     : !biz.plus ? `<div><i>🚀</i><div><b>Go Pro</b><span>Above every Plus listing, instant text alerts, an account manager</span></div><a class="c" href="/manage/upgrade?id=${id}">Go Pro</a></div>` : "";
   return PAGE(d, {
@@ -7648,13 +7810,14 @@ const MANAGEHUB = (d, biz, reviews, photos, updates, edit) => {
 <section class="mh-pn" id="reviews" data-pane="reviews">${REVIEWSSECTION(biz, reviews.pending, reviews.decided, reviews.reqs, reviews.rq)}</section>
 <section class="mh-pn" id="photos" data-pane="photos">${PHOTOSSECTION(biz, photos.pending, photos.approved)}</section>
 <section class="mh-pn" id="updates" data-pane="updates">${biz.premium ? UPDATESSECTION(biz, updates.list, updates.followerCount, updates.err) : `<div class="blk"><h2>Post an offer or event</h2>${S.freeOnly ? "" : `<div class="note note-warn">📣 Share promotions and events on your page <a href="/manage/upgrade?id=${id}"><em>PLUS</em>Unlock</a></div>`}</div>`}</section>
+<section class="mh-pn" id="team" data-pane="team">${TEAMPANE(biz, edit.team || {})}</section>
 <div class="mh-del">${DELETESECTION(biz)}</div>
 <script>(function(){var tb=document.querySelectorAll(".mh-tb a"),pn=document.querySelectorAll(".mh-pn");if(!tb.length)return;
 document.documentElement.classList.add("mh-js");
 function show(t){var ok=false;for(var i=0;i<pn.length;i++){var on=pn[i].getAttribute("data-pane")===t;pn[i].hidden=!on;ok=ok||on}
 if(!ok)return show("listing");for(var j=0;j<tb.length;j++)tb[j].classList.toggle("on",tb[j].getAttribute("data-tab")===t)}
 for(var k=0;k<tb.length;k++)tb[k].addEventListener("click",function(e){e.preventDefault();var t=this.getAttribute("data-tab");show(t);try{history.replaceState(null,"","#"+t)}catch(x){}});
-var h=(location.hash||"").slice(1);show(/^(listing|reviews|photos|updates)$/.test(h)?h:h==="request"?"reviews":"listing");
+var h=(location.hash||"").slice(1);show(/^(listing|reviews|photos|updates|team)$/.test(h)?h:h==="request"?"reviews":"listing");
 if(/^sec-/.test(h)){var se=document.getElementById(h);if(se)setTimeout(function(){se.scrollIntoView()},60)}
 var dl=document.querySelector(".mh-del-link");if(dl)dl.addEventListener("click",function(e){e.preventDefault();var b=document.getElementById("delListingBtn");if(b)b.click()});})();<\/script>
 </div>`
@@ -8642,7 +8805,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.81-shared";
+const BUILD = "v16.82-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -9023,6 +9186,22 @@ const _export = {
           out.push(`${ok ? "✓" : "✗ couldn't tag"} ${r.business} (${r.status}, from ${r.utm_source || r.referrer_domain})`);
         }
         return TXT(`seoinbound added to ${tagged} past lead(s) that came from search or AI.\n\n${out.join("\n")}`);
+      }
+      if (p[1] === "competitors") {
+        if (role !== "admin") return TXT("Competitors needs full admin access — ask an admin.");
+        await migrate(DB, env);
+        // ?scan=1 re-checks every listing the rule could match against its GHL contact now (tags included), instead of
+        // waiting for the next full sync to pass over it.
+        let scanned = 0;
+        if (u.searchParams.has("scan")) {
+          const rows = (await DB.prepare("SELECT ghl_id,name,cat,sub,premium,plus FROM businesses").all()).results || [];
+          for (const r of rows.filter(r => COMPETITOR({ ...r }, []))) {
+            await insertOne(env, DB, r.ghl_id).catch(() => {});
+            scanned++;
+          }
+        }
+        const hid = (await DB.prepare("SELECT name,sub,ghl_id,created_at FROM competitor_hidden ORDER BY name").all()).results || [];
+        return TXT(`${scanned ? `Re-checked ${scanned} listing(s).\n` : ""}${hid.length} listing(s) kept off the directory as competitors. Tag a contact "not-competitor" in GHL to bring it back.\n\n` + hid.map(h => `${h.name} | ${h.sub} | ${h.ghl_id}`).join("\n"));
       }
       if (p[1] === "duplicates") {
         if (role !== "admin") return TXT("Duplicates needs full admin access — ask an admin.");
@@ -11574,7 +11753,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       if (password !== String(f.get("password2") || "")) return back("Those two passwords don't match — try again");
       const rec = JSON.parse(j);
       const cid = rec.contactId || await ghlFindOrCreateContact(env, rec.email, {});
-      const ok = cid ? await ghlSetPassword(env, cid, password) : false;
+      const ok = await setPasswordFor(env, rec.email, cid, password);
       if (!ok) return back("Couldn't save the new password — try again");
       await KV.delete("pwreset:" + t);
       return signInRedirect(env, rec.email, await resolveDisplayName(env, rec.email, rec.name));
@@ -11638,7 +11817,8 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         name: pending.name
       });
       if (!cid) return Response.redirect(AUTH.SITE_URL + "/signup?err=" + encodeURIComponent("Couldn't create your account — try again"), 302);
-      await ghlSetPassword(env, cid, pending.password);
+      await setPasswordFor(env, pending.email, cid, pending.password);
+      await setLeadSource(env, cid, "Sign up", req);
       const cookie = await startSession(env, pending.email, pending.name);
       if (!cookie) return Response.redirect(AUTH.SITE_URL + "/signup?err=" + encodeURIComponent("Sign-in unavailable. Try again shortly"), 302);
       const hdrs = new Headers({
@@ -11745,11 +11925,12 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         const em = NRM(String(f.get("email") || ""));
         const name = String(f.get("name") || "").trim().replace(/\s+/g, " ").slice(0, 80);
         const phone = String(f.get("phone") || "").trim().slice(0, 30);
-        const err = em !== NRM(s.email) ? `Type the same email you signed in with (${s.email}).` : name.split(" ").length < 2 ? "Enter your first and last name." : !NPHONE(phone) ? "Enter a phone number we can reach you on." : "";
-        if (err) return R2(CONFIRMOWNER(d, s.email, rows, { email: em, name: name, phone: phone }, err));
+        const yrs = YEAR(f.get("yrs"));
+        const err = em !== NRM(s.email) ? `Type the same email you signed in with (${s.email}).` : name.split(" ").length < 2 ? "Enter your first and last name." : !NPHONE(phone) ? "Enter a phone number we can reach you on." : !yrs ? "Enter the year the business was established (e.g. 2015)." : "";
+        if (err) return R2(CONFIRMOWNER(d, s.email, rows, { email: em, name: name, phone: phone, yrs: String(f.get("yrs") || "") }, err));
         try {
           const m = await fields(env);
-          const cf = [ [ fieldId(m, "owner name"), name ], [ fieldId(m, "owner phone", "owner phone number"), phone ] ].filter(([ fid ]) => fid).map(([ id, value ]) => ({ id: id, value: value }));
+          const cf = [ [ fieldId(m, "owner name"), name ], [ fieldId(m, "owner phone", "owner phone number"), phone ], [ fieldId(m, "year established", "years in business", "established", "year founded"), yrs ] ].filter(([ fid ]) => fid).map(([ id, value ]) => ({ id: id, value: value }));
           // Custom fields only in this call (GHL drops custom fields sent alongside native ones); activateOwner sets Owner Email.
           if (cf.length) for (const r of rows) await fetch(`${API}/contacts/${r.ghl_id}`, {
             method: "PUT",
@@ -11771,7 +11952,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       try {
         const m = await fields(env), c = await ghlGetContact(env, rows[0].ghl_id);
         const v = c ? cv(c, m) : {};
-        pre = { email: "", name: P(v, "owner name") || "", phone: P(v, "owner phone", "owner phone number") || "" };
+        pre = { email: "", name: P(v, "owner name") || "", phone: P(v, "owner phone", "owner phone number") || "", yrs: YEAR(P(v, "year established", "years in business", "established", "year founded")) || "" };
       } catch {}
       return R2(CONFIRMOWNER(d, s.email, rows, pre, ""));
     }
@@ -11950,7 +12131,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       if (password.length < 8) return Response.redirect(AUTH.SITE_URL + "/manage/password?err=" + encodeURIComponent("Password must be at least 8 characters"), 302);
       if (password !== String(f.get("password2") || "")) return Response.redirect(AUTH.SITE_URL + "/manage/password?err=" + encodeURIComponent("Those two passwords don't match — try again"), 302);
       const cid = await ghlFindOrCreateContact(env, s.email, {});
-      const ok = cid ? await ghlSetPassword(env, cid, password) : false;
+      const ok = await setPasswordFor(env, s.email, cid, password);
       if (ok) await markPw(env, s.email);
       return Response.redirect(AUTH.SITE_URL + "/manage/password" + (ok ? "?ok=1" : "?err=" + encodeURIComponent("Couldn't save — try again")), 302);
     }
@@ -12174,8 +12355,52 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         err: u.searchParams.get("lerr") || "",
         ok: u.searchParams.has("lok"),
         warn: u.searchParams.get("lwarn") || "",
-        note: u.searchParams.get("lnote") || ""
+        note: u.searchParams.get("lnote") || "",
+        team: {
+          ownerEmail: bizRow.owner_email || "",
+          isOwner: !!bizRow.owner_email && NRM(bizRow.owner_email) === NRM(s.email),
+          members: DB ? (await DB.prepare("SELECT email,added_at FROM business_team WHERE ghl_id=?1 ORDER BY added_at").bind(id).all().catch(() => ({}))).results || [] : [],
+          ok: u.searchParams.get("tok") || "",
+          err: u.searchParams.get("terr") || ""
+        }
       }));
+    }
+    if (u.pathname === "/manage/team" && req.method === "POST") {
+      const s = await session(env, req);
+      if (!s) return Response.redirect(AUTH.SITE_URL + "/login", 302);
+      const f = await req.formData();
+      const id = String(f.get("id") || ""), act = String(f.get("action") || ""), em = NRM(f.get("email") || "");
+      const back = q => Response.redirect(AUTH.SITE_URL + "/manage/hub?id=" + encodeURIComponent(id) + "&" + q + "#team", 302);
+      const row = DB ? await DB.prepare("SELECT ghl_id,name,owner_email FROM businesses WHERE ghl_id=?1").bind(id).first() : null;
+      if (!row || !row.owner_email || NRM(row.owner_email) !== NRM(s.email)) return back("terr=" + encodeURIComponent("Only the owner can add or remove people."));
+      if (act === "add") {
+        const n = (await DB.prepare("SELECT COUNT(*) n FROM business_team WHERE ghl_id=?1").bind(id).first() || {}).n || 0;
+        const err = !em || BADMAIL(em) ? "Enter a valid email address." : em === NRM(s.email) ? "That's your own email — you're already the owner." : OURMAIL(em) ? "That's one of our own staff addresses." : n >= 10 ? "A listing can have up to 10 team members." : !await rateOk(env, "teamadd:" + id, 20) ? "Too many changes — try again in an hour." : "";
+        if (err) return back("terr=" + encodeURIComponent(err));
+        await DB.prepare("INSERT OR IGNORE INTO business_team(ghl_id,email,added_by,added_at) VALUES(?1,?2,?3,?4)").bind(id, em, NRM(s.email), Date.now()).run();
+        await teamToGhl(env, DB, id, `${s.email} added ${em} to the team for this listing (they can sign in and manage it).`);
+        let owner = s.email;
+        try {
+          owner = await ownerNameFor(env, DB, s.email) || s.email;
+        } catch {}
+        await sendTplEmail(env, DB, em, "team_invite", {
+          business: row.name,
+          brand: S.brand,
+          email: em,
+          owner: owner
+        }, AUTH.SITE_URL + "/login?tab=signup&email=" + encodeURIComponent(em), undefined, id).catch(e => console.log("team invite email: " + e.message));
+        return back("tok=" + encodeURIComponent(`Added ${em}. We've emailed them a link to sign in.`));
+      }
+      if (act === "remove" && em) {
+        await DB.prepare("DELETE FROM business_team WHERE ghl_id=?1 AND email=?2").bind(id, em).run();
+        if (!await DB.prepare("SELECT 1 FROM business_team WHERE email=?1 LIMIT 1").bind(em).first()) {
+          const KVt = KVOF(env);
+          if (KVt) await KVt.delete("tpw:" + em).catch(() => {});
+        }
+        await teamToGhl(env, DB, id, `${s.email} removed ${em} from the team for this listing.`);
+        return back("tok=" + encodeURIComponent(`Removed ${em}. They can no longer manage this listing.`));
+      }
+      return back("");
     }
     if (u.pathname === "/manage/updates" && req.method === "POST") {
       const s = await session(env, req);
@@ -12632,6 +12857,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         });
         if (cid) {
           await ghlAddTag(env, cid, [ "ad-request" ]);
+          await setLeadSource(env, cid, "Advertise form", req);
           try {
             await fetch(`${API}/contacts/${cid}/notes`, {
               method: "POST",
@@ -13087,6 +13313,8 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       const leadIp = req.headers.get("cf-connecting-ip") || "";
       const leadUa = String(req.headers.get("user-agent") || "").slice(0, 200);
       if (l.type === "add") {
+        l.yrs = YEAR(l.yrs) || "";
+        if (!l.yrs) return R2(NOTICE(await SHELL(DB, env), "Year established is needed", "Please go back and enter the year your business was established (e.g. 2015).", "Go back", "/add"), 400);
         l.category = String(l.category || "").trim() || "Other";
         let cid = "";
         if (l.phone) {
@@ -13140,6 +13368,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
           });
           console.log("add: no contact created for " + l.email + " — duplicate email; a business contact is created at publish time");
         } else if (!cid) console.log("add: no contact created and no email supplied");
+        if (cid) await setLeadSource(env, cid, "Add a business", req);
         if (cid && !matchedLive) {
           try {
             await ghlUpdateContact(env, cid, {
@@ -13316,6 +13545,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         phone: l.phone || ""
       }) : "";
       if (cid) await ghlAddTag(env, cid, [ "consumer", "website-lead", "quote-request" ]);
+      if (cid) await setLeadSource(env, cid, "Quote request", req);
       const note = `Enquiry for "${l.business || "?"}"\nFrom: ${l.name || "-"} <${l.email || "-"}>${l.phone ? " · " + l.phone : ""}\n\n${l.details || "(no message)"}\n\nSubmitted from IP: ${leadIp || "-"}`;
       let noted = false;
       if (l.ghlId) {
@@ -13627,6 +13857,8 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       if (needsOwner && (!ownerName || !ownerEmail || !ownerPhone || !disclaimer)) {
         return R(CLAIMSTART(d, b, "Since you're not the owner, please add the owner's name, email and phone, and check the confirmation box."));
       }
+      const yrs = YEAR(f.get("yrs"));
+      if (!yrs) return R(CLAIMSTART(d, b, "Please enter the year the business was established (e.g. 2015)."));
       const ip = req.headers.get("cf-connecting-ip") || "0";
       if (!await rateOk(env, "claim:" + ip, AUTH.CLAIM_RATE_PER_HOUR) || !await rateOk(env, "claimb:" + id, AUTH.CLAIM_RATE_PER_HOUR)) return R2(NOTICE(d, "Too many attempts", "Please wait an hour before trying again.", "Back", "/claim"), 429);
       try {
@@ -13654,6 +13886,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       const claimFields = {
         "claim role": role,
         "claim notes": fullNotes,
+        "year established": yrs,
         "owner name": needsOwner ? ownerName : name,
         "owner phone": needsOwner ? ownerPhone : phone
       };
@@ -13683,6 +13916,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         cid = id;
       }
       const seoTag = leadChannelTag(utmSource, utmMedium);
+      if (cid) await setLeadSource(env, cid, "Claim form", req);
       if (cid) await ghlAddTag(env, cid, [ "claim-request", utmSource ? `source-${SL(utmSource)}` : "" ].filter(Boolean));
       if (seoTag && cid) await addSeoInbound(env, cid);
       if (seoTag && id !== cid) try {

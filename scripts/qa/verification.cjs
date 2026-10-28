@@ -27,7 +27,7 @@ const get = async path => { const r = await F(BASE + path, { redirect: "manual" 
 const refOf = loc => (loc.match(/ref=([a-f0-9]+)/) || [])[1];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const until = async (fn, ms) => { const t = Date.now(); while (Date.now() - t < ms) { try { if (fn()) return true; } catch {} await sleep(3000); } return false; };
-const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Person", role: "Owner", phone: "8135550100", details: "qa" }, ip);
+const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Person", role: "Owner", phone: "8135550100", yrs: "2010", details: "qa" }, ip);
 
 (async () => {
   sql("DELETE FROM claims");
@@ -172,7 +172,7 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
 
   // T13 add-a-business rate limit per visitor (4/hour) → then old flow
   let lastAdd;
-  for (let i = 0; i < 5; i++) lastAdd = await post("/api/lead", { type: "add", business: "QA Add " + i, category: "Food", email: `add${i}@example.com`, phone: "81355502" + (10 + i), owner_name: "A" }, "10.9.9.9");
+  for (let i = 0; i < 5; i++) lastAdd = await post("/api/lead", { type: "add", business: "QA Add " + i, category: "Food", email: `add${i}@example.com`, phone: "81355502" + (10 + i), owner_name: "A", yrs: "2012" }, "10.9.9.9");
   ok(lastAdd.status === 200 && /got it/i.test(txt(lastAdd.html)), "T13 5th add from same visitor falls back to team", lastAdd.status + " " + lastAdd.loc);
 
   // T14 admin approve button still works (regression after extraction)
@@ -283,14 +283,14 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const exj = (() => { try { return JSON.parse(ex[0].extra); } catch { return {}; } })();
   ok(exj.services === "Thing one, Thing two" && exj.website === "qaextra.com" && exj.hood === "Downtown" && exj.yrs === "2001", "T23 website, services, area and year are kept with the request", JSON.stringify(ex));
   // T25 an owner adding a second location while the first is still waiting does not overwrite the first
-  for (const nm of ["QA Loc One", "QA Loc Two"]) await F(BASE + "/api/lead", { method: "POST", redirect: "manual", body: new URLSearchParams({ type: "add", business: nm, category: "Other", email: "multi@qamulti.com", owner_name: "Mul Ti", address: "1 Multi Rd", zip: "33602", details: "x" }) });
+  for (const nm of ["QA Loc One", "QA Loc Two"]) await F(BASE + "/api/lead", { method: "POST", redirect: "manual", body: new URLSearchParams({ type: "add", business: nm, category: "Other", email: "multi@qamulti.com", owner_name: "Mul Ti", address: "1 Multi Rd", zip: "33602", yrs: "2005", details: "x" }) });
   const locs = sql("SELECT business FROM claims WHERE email='multi@qamulti.com' ORDER BY id").map(x => x.business);
   ok(locs.length === 2 && locs[0] === "QA Loc One" && locs[1] === "QA Loc Two", "T25 two locations from one owner stay two separate requests", JSON.stringify(locs));
   // T26 sending the same business twice is still treated as a repeat (no duplicate)
-  await F(BASE + "/api/lead", { method: "POST", redirect: "manual", body: new URLSearchParams({ type: "add", business: "QA Loc Two", category: "Other", email: "multi@qamulti.com", owner_name: "Mul Ti", address: "1 Multi Rd", zip: "33602", details: "x" }) });
+  await F(BASE + "/api/lead", { method: "POST", redirect: "manual", body: new URLSearchParams({ type: "add", business: "QA Loc Two", category: "Other", email: "multi@qamulti.com", owner_name: "Mul Ti", address: "1 Multi Rd", zip: "33602", yrs: "2005", details: "x" }) });
   ok(sql("SELECT count(*) n FROM claims WHERE email='multi@qamulti.com'")[0].n === 2, "T26 the same business sent twice is updated, not duplicated");
   // T27 location A, then B, then A again: A's details land on A's request, not B's
-  await F(BASE + "/api/lead", { method: "POST", redirect: "manual", body: new URLSearchParams({ type: "add", business: "QA Loc One", category: "Other", email: "multi@qamulti.com", owner_name: "Mul Ti", address: "1 Multi Rd", zip: "33611", website: "loc-one.com", details: "x" }) });
+  await F(BASE + "/api/lead", { method: "POST", redirect: "manual", body: new URLSearchParams({ type: "add", business: "QA Loc One", category: "Other", email: "multi@qamulti.com", owner_name: "Mul Ti", address: "1 Multi Rd", zip: "33611", website: "loc-one.com", yrs: "2005", details: "x" }) });
   const ex27 = sql("SELECT business, extra FROM claims WHERE email='multi@qamulti.com' ORDER BY id");
   const ofb = nm => { try { return JSON.parse((ex27.find(x => x.business === nm) || {}).extra || "{}"); } catch { return {}; } };
   ok(ofb("QA Loc One").website === "loc-one.com" && ofb("QA Loc Two").website !== "loc-one.com", "T27 resubmitted location keeps its own details", JSON.stringify(ex27));
@@ -355,7 +355,7 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const c38h = await c38.text();
   const bad38 = await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ email: "other@x.com", name: "Pat Baker", phone: "8135550100" }) });
   const bad38h = await bad38.text();
-  const ok38 = await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ email: "Owner@QAEight.com", name: "Pat Baker", phone: "8135550100" }) });
+  const ok38 = await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ email: "Owner@QAEight.com", name: "Pat Baker", phone: "8135550100", yrs: "2009" }) });
   const act38 = sql(`SELECT activated_at FROM owner_pending WHERE ghl_id='QA8'`)[0] || {};
   const a38b = await F(BASE + "/account", { redirect: "manual", headers: { cookie: ownerCookie } });
   ok(/\/manage\/confirm/.test(a38.headers.get("location") || "") && /QA Eight Bakery/.test(c38h) && /same email you signed in with/.test(bad38h) && ok38.status === 302 && /claimed=1/.test(ok38.headers.get("location") || "") && act38.activated_at > 0 && a38b.status === 200, "T38 held listing: owner confirms email + name + phone, then it's claimed", [ a38.status, c38.status, bad38.status, ok38.status, act38.activated_at, a38b.status ].join(" "));
@@ -365,5 +365,17 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const hp39 = await F(BASE + "/api/signup", { method: "POST", redirect: "manual", body: new URLSearchParams({ name: "Bot", email: "victim39@example.com", password: "password39", password2: "password39", website: "x" }) });
   const sent39 = /victim39@example\.com/.test(require("fs").readFileSync(LOG, "utf8"));
   ok(hp39.status === 302 && !/verify/.test(hp39.headers.get("location") || "") && !sent39, "T39 bot-filled hidden field: no code email, no verify page", hp39.status + " " + hp39.headers.get("location"));
+  // T40 Team tab: the owner adds and removes a teammate; the teammate's email then manages the listing (ownedIds)
+  const t40a = await F(BASE + "/manage/team", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ id: "QA8", action: "add", email: "Staff@QAEight.com" }) });
+  const t40row = sql(`SELECT email FROM business_team WHERE ghl_id='QA8'`).map(r => r.email).join(",");
+  const t40hub = await (await F(BASE + "/manage/hub?id=QA8", { headers: { cookie: ownerCookie } })).text();
+  const t40bad = await F(BASE + "/manage/team", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ id: "QA8", action: "add", email: "not an email" }) });
+  const t40r = await F(BASE + "/manage/team", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ id: "QA8", action: "remove", email: "staff@qaeight.com" }) });
+  const t40left = sql(`SELECT COUNT(*) n FROM business_team WHERE ghl_id='QA8'`)[0].n;
+  ok(/tok=/.test(t40a.headers.get("location") || "") && t40row === "staff@qaeight.com" && /data-pane="team"/.test(t40hub) && /staff@qaeight\.com/.test(t40hub) && /terr=/.test(t40bad.headers.get("location") || "") && /tok=/.test(t40r.headers.get("location") || "") && t40left === 0, "T40 Team tab: owner adds a teammate, a bad email is refused, removing works", [ t40a.headers.get("location"), t40row, t40bad.headers.get("location"), t40left ].join(" | "));
+  // T41 Year established is required on the claim form, and the private-details box shows before the form
+  const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
+  const t41pg = await get("/claim/start?id=QA3");
+  ok(/year the business was established/i.test(txt(t41.html)) && /Private — never shown on the directory/.test(t41pg.html) && /name="yrs"[^>]*required/.test(t41pg.html), "T41 claim form: year established required; private box shown", t41.status);
   console.log(`\n${n - fails}/${n} passed`);
 })().catch(e => { console.log("CRASH", e); process.exit(1); });
