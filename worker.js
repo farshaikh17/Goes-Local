@@ -13313,7 +13313,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       const leadIp = req.headers.get("cf-connecting-ip") || "";
       const leadUa = String(req.headers.get("user-agent") || "").slice(0, 200);
       if (l.type === "add") {
-        l.yrs = YEAR(l.yrs) || "";
+        l.yrs = String(YEAR(l.yrs) || "");
         if (!l.yrs) return R2(NOTICE(await SHELL(DB, env), "Year established is needed", "Please go back and enter the year your business was established (e.g. 2015).", "Go back", "/add"), 400);
         l.category = String(l.category || "").trim() || "Other";
         let cid = "";
