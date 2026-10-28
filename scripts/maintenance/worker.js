@@ -8,7 +8,8 @@ const E = s => String(s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&
 export default {
   async fetch(req, env) {
     const brand = env.CITY_BRAND || new URL(req.url).hostname.replace(/^www\./, "");
-    const logo = env.CITY_LOGO_URL || "";
+    // Only a full web address: a logo the real site serves itself is not there while this page stands in.
+    const logo = /^https:\/\//i.test(env.CITY_LOGO_URL || "") ? env.CITY_LOGO_URL : "";
     const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><title>Down for maintenance | ${E(brand)}</title>
 <style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#FBF5EA;font-family:Inter,Arial,sans-serif;color:#1B2A3A;padding:24px;box-sizing:border-box}
