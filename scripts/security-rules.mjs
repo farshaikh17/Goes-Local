@@ -32,6 +32,10 @@ const custom = [
     expression: `(${SEO_BOTS.map(b => `http.user_agent contains "${b}"`).join(" or ")}) and not starts_with(http.request.uri.path, "/webhooks/")` },
   { description: "GL: challenge cloud-hosted clients (Alibaba, OVH, DigitalOcean, Hetzner, AWS, Azure, GCP, Linode, Vultr)", action: "managed_challenge",
     expression: `(ip.geoip.asnum in {${CLOUD_ASNS}}) and not cf.client.bot and ${NOT_AI} and ${EXEMPT}` },
+  // Tampa, 27–28 Oct: ~149,000 fake sign-ups through Tor with real people's emails made GHL send ~81,000 code emails.
+  // Nobody needs Tor to submit our forms, so any form submission (POST) from Tor is blocked.
+  { description: "GL: block form submissions from Tor", action: "block",
+    expression: `ip.src.country eq "T1" and http.request.method eq "POST" and ${EXEMPT}` },
   { description: "GL: challenge unverified filter-combination crawling", action: "managed_challenge",
     expression: `(http.request.uri.query contains "rating=" or http.request.uri.query contains "claim=" or http.request.uri.query contains "sort=") and not cf.client.bot and ${EXEMPT}` }
 ];

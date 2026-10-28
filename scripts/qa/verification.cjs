@@ -361,5 +361,9 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   ok(/\/manage\/confirm/.test(a38.headers.get("location") || "") && /QA Eight Bakery/.test(c38h) && /same email you signed in with/.test(bad38h) && ok38.status === 302 && /claimed=1/.test(ok38.headers.get("location") || "") && act38.activated_at > 0 && a38b.status === 200, "T38 held listing: owner confirms email + name + phone, then it's claimed", [ a38.status, c38.status, bad38.status, ok38.status, act38.activated_at, a38b.status ].join(" "));
   sql("DELETE FROM businesses WHERE ghl_id LIKE 'GC%'"); sql("DELETE FROM dup_hidden WHERE ghl_id LIKE 'GC%'"); sql("DELETE FROM slug_redirects WHERE ghl_id LIKE 'GC%'");
   sql("DELETE FROM businesses WHERE ghl_id LIKE 'SC%'");
+  // T39 sign-up bot guards: the hidden field only bots fill in sends nothing; a Tor form submission is refused
+  const hp39 = await F(BASE + "/api/signup", { method: "POST", redirect: "manual", body: new URLSearchParams({ name: "Bot", email: "victim39@example.com", password: "password39", password2: "password39", website: "x" }) });
+  const sent39 = /victim39@example\.com/.test(require("fs").readFileSync(LOG, "utf8"));
+  ok(hp39.status === 302 && !/verify/.test(hp39.headers.get("location") || "") && !sent39, "T39 bot-filled hidden field: no code email, no verify page", hp39.status + " " + hp39.headers.get("location"));
   console.log(`\n${n - fails}/${n} passed`);
 })().catch(e => { console.log("CRASH", e); process.exit(1); });
