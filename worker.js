@@ -2634,7 +2634,11 @@ const ROWOF = r => ({
   gpReviews: (() => {
     try {
       const a = JSON.parse(r.gp_reviews || "[]");
-      return Array.isArray(a) ? a : [];
+      if (!Array.isArray(a)) return [];
+      // Highest-rated first, and 1–2 star reviews left out while there are better ones to show (Eric, 29 Oct). Google
+      // allows ordering and filtering when the page says so — the review section carries that notice (GOOGLEREVIEWS).
+      const good = a.filter(x => +x.rating >= 3);
+      return (good.length ? good : a).map((x, i) => [ x, i ]).sort((p, q) => (+q[0].rating || 0) - (+p[0].rating || 0) || p[1] - q[1]).map(p => p[0]);
     } catch {
       return [];
     }
@@ -6441,7 +6445,7 @@ const SITEREVIEWCARD = (r, bizName) => `<div class="rev-card">\n<div class="rev-
 const GOOGLEREVIEWS = b => {
   if (!(b.premium || b.claimed)) return "";
   if (!b.gpRating && !(b.gpReviews && b.gpReviews.length) && !b.map) return "";
-  return `<div class="blk"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">\n<h2 style="margin:0 10px 0 0">What people say on Google</h2>\n<span style="font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;background:${T.tealSoft};color:${T.teal};padding:3px 9px;white-space:nowrap;flex-shrink:0;border-radius:${T.rPill}">Live from Google</span></div>\n${b.gpRating ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap">\n<div style="display:flex;align-items:center;gap:10px">\n<span style="font-family:${T.serif};font-size:30px;font-weight:600;color:${T.navy}">${Number(b.gpRating).toFixed(1)}</span>\n<div><div style="letter-spacing:2px;font-size:14px">${STARROW(b.gpRating)}</div>\n<div style="font-size:12.5px;color:${T.muted};margin-top:2px">${NUM(b.gpReviewCount || 0)} Google reviews</div></div>\n</div>\n${b.map ? `<a class="btn btn-o btn-sm" href="${E(b.map)}" rel="nofollow noopener" style="flex-shrink:0">See on Google →</a>` : ""}\n</div>` : (b.map ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap">\n<p style="color:${T.muted};margin:0">Google reviews for this business haven't synced yet.</p>\n<a class="btn btn-o btn-sm" href="${E(b.map)}" rel="nofollow noopener" style="flex-shrink:0">See on Google →</a>\n</div>` : "")}\n${(b.gpReviews || []).length ? `<div class="rv-grid">${b.gpReviews.map(rv => REVCARD({ name: rv.author || "A Google user", date: rv.rel_time || "", rating: rv.rating, text: rv.text || "" })).join("")}</div>${REVMORE_JS}` : ""}\n</div>`;
+  return `<div class="blk"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">\n<h2 style="margin:0 10px 0 0">What people say on Google</h2>\n<span style="font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;background:${T.tealSoft};color:${T.teal};padding:3px 9px;white-space:nowrap;flex-shrink:0;border-radius:${T.rPill}">Live from Google</span></div>\n${b.gpRating ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap">\n<div style="display:flex;align-items:center;gap:10px">\n<span style="font-family:${T.serif};font-size:30px;font-weight:600;color:${T.navy}">${Number(b.gpRating).toFixed(1)}</span>\n<div><div style="letter-spacing:2px;font-size:14px">${STARROW(b.gpRating)}</div>\n<div style="font-size:12.5px;color:${T.muted};margin-top:2px">${NUM(b.gpReviewCount || 0)} Google reviews</div></div>\n</div>\n${b.map ? `<a class="btn btn-o btn-sm" href="${E(b.map)}" rel="nofollow noopener" style="flex-shrink:0">See on Google →</a>` : ""}\n</div>` : (b.map ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap">\n<p style="color:${T.muted};margin:0">Google reviews for this business haven't synced yet.</p>\n<a class="btn btn-o btn-sm" href="${E(b.map)}" rel="nofollow noopener" style="flex-shrink:0">See on Google →</a>\n</div>` : "")}\n${(b.gpReviews || []).length ? `<p style="font-size:12px;color:${T.muted};margin:-6px 0 12px">Highest-rated reviews shown first${b.map ? ` · <a href="${E(b.map)}" rel="nofollow noopener" style="color:${T.teal}">read all ${b.gpReviewCount ? NUM(b.gpReviewCount) + " " : ""}reviews on Google</a>` : ""}. Reviews aren't verified by Google; Google removes fake content when it finds it.</p><div class="rv-grid">${b.gpReviews.map(rv => REVCARD({ name: rv.author || "A Google user", date: rv.rel_time || "", rating: rv.rating, text: rv.text || "" })).join("")}</div>${REVMORE_JS}` : ""}\n</div>`;
 };
 
 function PHOTO(b, cls) {
@@ -8849,7 +8853,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.83-shared";
+const BUILD = "v16.84-shared";
 
 const APP_COOKIE = "gl_app";
 
