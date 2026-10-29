@@ -1290,7 +1290,9 @@ function P(o, ...ks) {
 function norm(c, m) {
   const v = cv(c, m);
   const name = P(v, "business name", "company name") || c.companyName || [ c.firstNameRaw || c.firstName, c.lastNameRaw || c.lastName ].filter(Boolean).join(" ").trim() || c.contactName || "Unnamed";
-  const rawSub = P(v, "category", "business category", "primary category", "main category") || PC(v, "gbp category", "lead category", "category");
+  // Lead Category is the one main-category field in GHL (Eric, 29 Oct); the others are read only when it is empty. The
+  // sub-category still decides through the category map, because GHL's main category is often wrong for the business.
+  const rawSub = P(v, "lead category", "category", "business category", "primary category", "main category") || PC(v, "lead category", "gbp category", "category");
   const subField = P(v, "subcategory", "sub category", "secondary category");
   const override = CATMAP.d[SL(subField || "")] || CATMAP.d[SL(rawSub || "")];
   let cat = override || (rawSub === "Other" || allMains().includes(rawSub) ? rawSub : mainOf(rawSub));
@@ -1833,6 +1835,7 @@ async function migrate(DB, env) {
   } catch {}
   try {
     await DB.prepare("CREATE TABLE IF NOT EXISTS dup_hidden(ghl_id TEXT PRIMARY KEY, keep_id TEXT NOT NULL, cs TEXT, slug TEXT, name TEXT DEFAULT '', created_at INTEGER)").run();
+    await DB.prepare("CREATE TABLE IF NOT EXISTS lead_cat_fix(ghl_id TEXT PRIMARY KEY, cat TEXT NOT NULL, created_at INTEGER)").run();
     await DB.prepare("CREATE TABLE IF NOT EXISTS competitor_hidden(ghl_id TEXT PRIMARY KEY, name TEXT DEFAULT '', cs TEXT, slug TEXT, sub TEXT DEFAULT '', created_at INTEGER)").run();
     await DB.prepare("CREATE TABLE IF NOT EXISTS business_team(ghl_id TEXT NOT NULL, email TEXT NOT NULL, added_by TEXT DEFAULT '', added_at INTEGER, PRIMARY KEY(ghl_id, email))").run();
   } catch {}
@@ -2139,7 +2142,7 @@ async function processImportBatch(env, DB, limit) {
   let categoryFid = "";
   try {
     const fm = await fields(env);
-    categoryFid = fieldId(fm, "category", "business category", "primary category", "main category");
+    categoryFid = fieldId(fm, "lead category", "category", "business category", "primary category", "main category");
   } catch {}
   let done = 0;
   for (const r of rows) {
@@ -2369,6 +2372,15 @@ async function syncStep(env, DB, maxPages) {
           return true;
         });
         if (unhide.length) await DB.batch(unhide);
+      }
+      try {
+        // GHL's Lead Category is brought in line with the category the site settled on (sub-category map first), a few
+        // at a time by leadCatBatch, so a re-sort never fires a burst of GHL updates.
+        const leadOf = new Map(page.contacts.map(c => [ c.id, String(P(cv(c, m), "lead category") || "").trim() ]));
+        const fix = pageList.filter(b => b.cat && b.cat !== "Other" && leadOf.get(b.id) !== b.cat);
+        if (fix.length) await DB.batch(fix.map(b => DB.prepare("INSERT INTO lead_cat_fix(ghl_id,cat,created_at) VALUES(?1,?2,?3) ON CONFLICT(ghl_id) DO UPDATE SET cat=excluded.cat").bind(b.id, b.cat, Date.now())));
+      } catch (e) {
+        console.log("sync: lead category queue failed: " + e.message);
       }
       {
         const tagsOf = new Map(page.contacts.map(c => [ c.id, c.tags ]));
@@ -3562,6 +3574,38 @@ async function ghlSetPassword(env, contactId, password) {
   }
 }
 
+// Writes the corrected main category into GHL's Lead Category (custom field only), oldest first. meta leadcat_pause=1
+// stops it without a deploy.
+async function leadCatBatch(env, DB, maxUpdates) {
+  if (await DB.prepare("SELECT 1 FROM meta WHERE k='leadcat_pause' AND v='1'").first().catch(() => null)) return { done: 0, left: -1, paused: true };
+  const fid = fieldId(await fields(env), "lead category");
+  if (!fid) return { done: 0, left: 0, error: "no Lead Category field" };
+  const rows = (await DB.prepare("SELECT ghl_id,cat FROM lead_cat_fix ORDER BY created_at LIMIT ?1").bind(maxUpdates).all()).results || [];
+  let done = 0;
+  for (const r of rows) {
+    const resp = await fetch(`${API}/contacts/${r.ghl_id}`, {
+      method: "PUT",
+      headers: {
+        ...H(env),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        customFields: [ {
+          id: fid,
+          value: r.cat
+        } ]
+      })
+    }).catch(() => null);
+    if (resp && resp.status === 429) break;
+    if (resp && (resp.ok || resp.status === 404 || resp.status === 400)) {
+      await DB.prepare("DELETE FROM lead_cat_fix WHERE ghl_id=?1 AND cat=?2").bind(r.ghl_id, r.cat).run();
+      if (resp.ok) done++;
+    }
+  }
+  const left = (await DB.prepare("SELECT COUNT(*) n FROM lead_cat_fix").first() || {}).n || 0;
+  return { done: done, left: left };
+}
+
 async function urlFieldSyncBatch(env, DB, maxUpdates) {
   const m = await fields(env);
   const fid = fieldId(m, "listing url", "listing_url");
@@ -4717,7 +4761,7 @@ async function publishListing(env, DB, rowId, cid, email) {
     let categoryFid = "";
     try {
       const fm = await fields(env);
-      categoryFid = fieldId(fm, "category", "business category", "primary category", "main category");
+      categoryFid = fieldId(fm, "lead category", "category", "business category", "primary category", "main category");
     } catch {}
     let x = {};
     try {
@@ -5110,7 +5154,7 @@ async function ghlUpdateContact(env, contactId, patch) {
       descr: [ "business description", "description", "about" ],
       hours: [ "hours", "business hours", "opening hours" ],
       services: [ "services", "specialties" ],
-      category: [ "category", "business category", "primary category", "main category" ],
+      category: [ "lead category", "category", "business category", "primary category", "main category" ],
       subcategory: [ "subcategory", "sub category", "secondary category" ],
       yrs: [ "year established", "years in business", "established", "year founded" ],
       ownerName: [ "owner name" ],
@@ -8805,7 +8849,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.82-shared";
+const BUILD = "v16.83-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -8879,6 +8923,12 @@ const _export = {
         if (gp.done) console.log(`cron: refreshed Google reviews for ${gp.done} listings, ${gp.left} left`);
       } catch (e) {
         console.log("cron google-reviews batch failed: " + e.message);
+      }
+      try {
+        const lc = await leadCatBatch(env, DB, 40);
+        if (lc.done || lc.error) console.log(`cron: Lead Category written for ${lc.done} contacts, ${lc.left} left${lc.error ? " (" + lc.error + ")" : ""}`);
+      } catch (e) {
+        console.log("cron lead category batch failed: " + e.message);
       }
       if (hourly) try {
         const uf = await urlFieldSyncBatch(env, DB, 100);
