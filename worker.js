@@ -3039,6 +3039,31 @@ async function applyListingVerification(env, DB, cid) {
     } else if (biz && (!biz.claim_invited_at || again)) {
       if (inviteTo) {
         if (again) console.log(`claim invite again for ${cid} (${inviteTo !== NRM(biz.claim_invited_to || "") ? "new address" : "24h passed"})`);
+        // A bounce (often from an earlier typo'd address) makes the "1.1 Email Event" workflow switch on email Do Not
+        // Disturb, and GHL then silently refuses every email to the contact. Setting Listing Verified means the rep just
+        // confirmed the address, so the invite turns it off first (Eric, 30 Oct: Tango, Maaco, ManCave). Native-field call.
+        const dnd = c.dndSettings || {};
+        const emailDnd = [ dnd.email, dnd.Email ].find(x => x && String(x.status || "").toLowerCase() === "active");
+        if (emailDnd) try {
+          const u = await fetch(`${API}/contacts/${cid}`, {
+            method: "PUT",
+            headers: {
+              ...H(env),
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              dndSettings: {
+                email: {
+                  status: "inactive",
+                  message: "Turned off by the website to send the Listing Verified invite"
+                }
+              }
+            })
+          });
+          await ghlNote(env, cid, u.ok ? `Email "Do Not Disturb" was on (${String(emailDnd.message || "an earlier bounce").slice(0, 80)}). It was turned off to send the invite to ${inviteTo}, because Listing Verification was set.` : `Email "Do Not Disturb" is on and couldn't be turned off (${u.status}), so the invite may be refused.`).catch(() => {});
+        } catch (e) {
+          console.log("invite: email DND off failed for " + cid + ": " + e.message);
+        }
         const href = CLAIMLINK(biz);
         const sent = await sendTplEmail(env, DB, inviteTo, "claim_invite", {
           business: biz.name,
