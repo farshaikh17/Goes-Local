@@ -408,6 +408,10 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const j45h = await j45.text(), j45c = j45.headers.get("set-cookie") || "";
   const o45 = await F(BASE + "/owners");
   ok(j45.status === 200 && /id="addBizForm"/.test(j45h) && /action="\/api\/lead"/.test(j45h) && /href="\/owners"/.test(j45h) && /gl_attr=[^;]*facebook[^;]*t45/.test(decodeURIComponent(j45c)) && /noindex/.test(j45.headers.get("x-robots-tag") || "") && /ViewContent/.test(j45h) && /gl_attr=[^;]*facebook/.test(decodeURIComponent(o45.headers.get("set-cookie") || "")), "T45 /join = List your business form for Facebook (cookie, claim link to /owners, ViewContent, not indexed)", j45.status + " " + decodeURIComponent(j45c).slice(0, 90));
+  // T46 Admin → Landing videos saves the city's clips and /join plays them (none saved = the city photo)
+  const lp46 = await F(BASE + "/admin/lp-media", { method: "POST", headers: { cookie: (lg.headers.get("set-cookie") || "").split(";")[0] }, body: new URLSearchParams({ hero_d: "https://example.com/a.mp4\nhttps://example.com/b.mp4\nnot-a-link", hero_m: "", cta_d: "", cta_m: "", tiles: "https://example.com/t.mp4 | Contractors", phone: "" }) });
+  const j46 = await (await F(BASE + "/join")).text();
+  ok(/Hero: 2 computer/.test(await lp46.text()) && /id="hvA"/.test(j46) && /example\.com\/b\.mp4/.test(j46) && !/not-a-link/.test(j46) && /Contractors/.test(j46) && /id="addBizForm"/.test(j46), "T46 Landing videos admin saves the clips (bad links dropped) and /join uses them with the same form", lp46.status);
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
   const t41pg = await get("/claim/start?id=QA3");

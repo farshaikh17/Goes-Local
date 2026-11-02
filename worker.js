@@ -3566,7 +3566,7 @@ async function startAdminSession(env, role) {
 
 const listingItems = [ [ "/admin/pending", "Pending listings" ], [ "/admin/claims", "Claims queue" ], [ "/admin/cancellations", "Cancellations" ], [ "/admin/deletions", "Deletion requests" ], [ "/admin/adrequests", "Ad space requests" ], [ "/admin/businesses", "Businesses" ] ];
 
-const contentItems = [ [ "/admin/comments", "Comments" ], [ "/admin/hero", "Homepage hero" ], [ "/admin/categories", "Categories" ], [ "/admin/images", "Category images" ], [ "/admin/banner-images", "Category banner photos" ], [ "/admin/hoods", "Neighbourhoods" ], [ "/admin/ads", "Ad slots" ], [ "/admin/banners", "Category banners" ], [ "/admin/claiminvites", "Claim invites" ] ];
+const contentItems = [ [ "/admin/comments", "Comments" ], [ "/admin/hero", "Homepage hero" ], [ "/admin/categories", "Categories" ], [ "/admin/images", "Category images" ], [ "/admin/banner-images", "Category banner photos" ], [ "/admin/hoods", "Neighbourhoods" ], [ "/admin/ads", "Ad slots" ], [ "/admin/banners", "Category banners" ], [ "/admin/claiminvites", "Claim invites" ], [ "/admin/lp-media", "Landing videos" ] ];
 
 const seoItems = [ [ "/admin/seo", "SEO" ], [ "/admin/blog", "Blog" ], [ "/admin/news", "News" ], [ "/admin/faqs", "Category FAQs" ], [ "/admin/hoodfaqs", "Neighbourhood FAQs" ] ];
 
@@ -7615,25 +7615,9 @@ const ALLHOODS = (d, counts) => PAGE(d, {
 // List Your Business = ad landing page (Eric approved the mockup, 5 Oct 2026): the form is in the first
 // screen, split into 2 steps (same fields, same /api/lead post), then product pictures, steps and FAQs.
 // x: { img (city hero photo), proof (a few claimed businesses with their own photo) }.
-const ADD = (d, x) => {
-  x = x || {};
-  const proof = (x.proof || []).slice(0, 5);
-  const seo = SEOTXT("add", `List your ${S.city} business free | ${S.brand}`, `Get found by ${S.city} customers. Add your business to ${S.brand} free — verified by a local team and live in 1–2 days.`);
-  const hoodN = HOODS_LIVE().length;
-  const lpRow = (name, sub, b, cls, rank, ver) => `<div class="lpx-row ${cls || ""}"><span class="lpx-rph">${b ? PHOTO(b) : ""}${rank ? `<em>#${rank}</em>` : ""}</span><span>${ver ? `<i class="lpx-v">✓ VERIFIED</i>` : ""}<b>${name}</b>${sub}</span></div>`;
-  const exHood = E(x.hoodName || (HOODS_LIVE()[0] ? HOODS_LIVE()[0].name : S.city));
-  return PAGE(d, {
-  title: seo.title,
-  desc: seo.desc,
-  can: S.dom + (x.fb ? "/join" : "/add"),
-  ld: x.fb ? undefined : SEOLD("add"),
-  body: `<section class="lpx-hero"${x.img ? ` style="background-image:url('${E(x.img)}')"` : ""}><div class="lpx-in">
-<div class="lpx-top"><span class="lpx-k"><i></i> 🏆 ${E(BRAG())}</span>
-<h1>${AREA.byCity ? `Customers across ${E(S.city)} are looking.` : `${E(S.city)} customers are looking.`} <em>Make sure they find you.</em></h1></div>
-<div class="lpx-bot"><p class="lpx-s">List your business on ${E(S.city)}'s #1 ${E(BRAGDIR())} — free, verified in 30 seconds with a code, and live straight away.</p>
-<ul class="lpx-li"><li><span>✓</span><div><b>Free forever</b> — no credit card, no contract</div></li><li><span>✓</span><div><b>Your own Google-friendly page</b> in your ${E(AREA.lo)}</div></li><li><span>✓</span><div><b>Customer enquiries</b> straight to your inbox</div></li></ul>
-<div class="lpx-proof">${proof.length ? `<span class="lpx-av">${proof.map(b => `<span>${PHOTO(b)}</span>`).join("")}</span>` : ""}<span>Join <b>${NUM(d.count || 0)}</b> ${E(S.city)} businesses</span></div></div>
-<div class="lpx-card" id="start"><h2>Add your business — free</h2><div class="lpx-sub" id="lpxStepTxt">Step 1 of 2 · takes about 3 minutes</div><div class="lpx-pg"><i class="on"></i><i id="lpxPg2"></i></div>
+// The "List your business" form card and its 2-step script, shared by /add and the video page (/join) so both use
+// exactly the same form (Eric, 2 Nov: "the exact same flow … same form").
+const ADDCARD = x => `<div class="lpx-card" id="start"><h2>Add your business — free</h2><div class="lpx-sub" id="lpxStepTxt">Step 1 of 2 · takes about 3 minutes</div><div class="lpx-pg"><i class="on"></i><i id="lpxPg2"></i></div>
 <script>document.addEventListener("DOMContentLoaded",function(){var e=new URLSearchParams(location.search).get("email");if(e&&/^[^@ ]+@[^@ ]+$/.test(e)){["oe","be"].forEach(function(i){var x=document.getElementById(i);if(x&&!x.value)x.value=e})}})</script><form method="POST" action="/api/lead" id="addBizForm"><input type="hidden" name="type" value="add">\n<input type="hidden" name="utm_source" id="lfSrc"><input type="hidden" name="utm_medium" id="lfMed">\n<input type="hidden" name="utm_campaign" id="lfCam"><input type="hidden" name="landing_page" id="lfLand">\n<input type="hidden" name="referrer_domain" id="lfRef">\n<script>(function(){try{\nvar m=document.cookie.match(/(?:^|; )gl_attr=([^;]*)/);\nif(!m)return;var a=JSON.parse(decodeURIComponent(m[1]));\nvar set=function(id,v){var e=document.getElementById(id);if(e)e.value=v||""};\nset("lfSrc",a.source);set("lfMed",a.medium);set("lfCam",a.campaign);set("lfLand",a.landing);set("lfRef",a.source)\n}catch(e){}})();<\/script>
 <div id="lpxS1">
 <div class="fld2"><label for="bn">Business name *</label><input id="bn" name="business" required placeholder="${AREA.byCity ? "e.g. Main Street Plumbing" : "e.g. Blue Palm Plumbing"}"></div>
@@ -7664,22 +7648,9 @@ ${PRIVBOX("Your name, email and phone are only used to verify ownership of this 
 </div>
 </form>
 <div class="lpx-fine"><span>🔒 Never sold or shared</span><span>✓ No card needed</span></div>
-<div class="lpx-alt">Already listed? <a href="${x.fb ? "/owners" : "/claim"}">Find &amp; claim your business →</a></div></div>
-</div></section>
-<div class="wrap">
-<div class="lpx-stats"><div><b>#1</b><span>${E(BRAGDIR())} in ${E(S.city)}</span></div><div><b>${NUM(d.count || 0)}</b><span>businesses listed</span></div><div><b>${hoodN}</b><span>${E(S.city)} ${E(AREA.los)}</span></div><div><b>30 sec</b><span>to go live</span></div></div>
-<div class="lpx-feat"><div><div class="lpx-kk">Get found</div><h2>Show up when locals search for what you do</h2><p>Every business gets its own page in its category and ${E(AREA.lo)} — built to show up on Google for searches like "plumber in ${exHood}".</p><ul><li>Listed in your category and ${E(AREA.lo)} guides</li><li>Eligible for "${E(S.city)}'s Best" top-10 lists</li><li>Verified badge that builds trust</li></ul></div>
-<div class="lpx-vis"><span class="lpx-ex">Example</span>${lpRow("Your Business", `★ 4.9 (128) · Plumber · ${exHood}`, proof[0], "me", 1, 1)}${lpRow("Another Plumbing Co.", `★ 4.6 (54) · Plumber · ${exHood}`, null, "dim", 2)}${lpRow("City Drain Pros", `★ 4.4 (31) · Plumber · ${exHood}`, null, "dim", 3)}</div></div>
-<div class="lpx-feat r"><div><div class="lpx-kk">Get customers</div><h2>Customers message you directly</h2><p>Enquiries from your page land straight in your inbox. No middleman, no fee per lead.</p><ul><li>Call, directions and website buttons on your page</li><li>Hours with a live "Open now" badge</li><li>Add photos, services and offers from your phone</li></ul></div>
-<div class="lpx-vis"><span class="lpx-ex">Example</span><div class="lpx-msg"><div class="t"><span>📩 New enquiry · Your Business</span><span>2 min ago</span></div><b>Maria G.</b> — "Hi! Do you have availability this Saturday morning? Looking for a quote."</div><div class="lpx-msg" style="margin-left:40px"><div class="t"><span>📞 Call from your page</span><span>Today</span></div><b>A customer</b> tapped "Call"</div><div class="lpx-msg"><div class="t"><span>👀 Your page this week</span></div><b style="font-size:22px">248 views</b> · 19 direction requests</div></div></div>
-<div class="lpx-h"><h2>Live in 3 simple steps</h2><p>No website needed. No tech skills needed.</p></div>
-<div class="lpx-steps"><div><b>Tell us about your business</b><p>Fill in the short form above — about 3 minutes.</p></div><div><b>Verify with a code</b><p>We text or email you a 6-digit code — it takes 30 seconds.</p></div><div><b>You're live straight away</b><p>Your page goes live with a Verified badge, and customers start finding you.</p></div></div>
-<div class="lpx-h"><h2>Questions owners ask</h2></div>
-<div class="lpx-faq"><details open><summary>Is it really free?</summary><p>Yes. ${S.freeOnly ? "Listing your business is free — no credit card, no contract, no paid plans." : `A basic listing is free forever — no credit card, no contract. <a href="/pricing">Paid plans</a> are optional extras.`}</p></details><details><summary>My business might already be listed.</summary><p>Search for it on the <a href="/claim">Claim page</a> — claiming is free and lets you edit everything.</p></details><details><summary>Do I need a website?</summary><p>No. Your page works as your web presence, with hours, photos and a contact form.</p></details><details><summary>How long until I'm live?</summary><p>Straight away — as soon as you enter the code we text or email you. If you can't get the code, our team checks your details instead, usually within 1–2 business days.</p></details></div>
-</div>
-<section class="lpx-end"><h2>Ready to be found in ${E(S.city)}?</h2><p>Free forever. Takes 3 minutes.</p><a href="#start">Add my business free ↑</a></section>
-<a class="lpx-sticky" id="lpxSticky" href="#start">Add my business — free</a>
-<script>(function(){
+<div class="lpx-alt">Already listed? <a href="${x.fb ? "/owners" : "/claim"}">Find &amp; claim your business →</a></div></div>`;
+
+const ADDJS = `<script>(function(){
 var f=document.getElementById("addBizForm"),s1=document.getElementById("lpxS1"),s2=document.getElementById("lpxS2");
 if(!f||!s1||!s2)return;f.classList.add("lpx-js");
 function req(box,on){box.querySelectorAll("[data-req]").forEach(function(e){e.required=on})}
@@ -7699,7 +7670,179 @@ document.getElementById("lpxBack").addEventListener("click",function(){step(1)})
 f.addEventListener("submit",function(){var b=s2.querySelector("button.lpx-btn");if(b){b.disabled=true;b.textContent="Sending…"}var k=document.getElementById("lpxBack");if(k)k.style.display="none"});
 var st=document.getElementById("lpxSticky"),card=document.getElementById("start");
 if(st&&card&&"IntersectionObserver" in window)new IntersectionObserver(function(es){st.classList.toggle("off",es[0].isIntersecting)}).observe(card);
+})();<\/script>`;
+
+// Video landing page for paid ads (Eric, 2 Nov: "build a lot better page … add the videos"). Same form card and
+// script as /add (ADDCARD / ADDJS). The clips are per city, saved in Admin → Landing videos (meta lp_media), never in
+// the code; with none saved, or for visitors who prefer reduced motion / save data, the city photo is shown instead.
+const LPMEDIA_KEYS = [ "hero_d", "hero_m", "cta_d", "cta_m", "tiles", "phone" ];
+const lpUrls = v => String(v || "").split(/\s+/).map(x => x.trim()).filter(x => /^https:\/\/[^\s"'<>]+\.(mp4|webm|mov)(\?[^\s"'<>]*)?$/i.test(x));
+const lpTiles = v => String(v || "").split("\n").map(l => l.split("|").map(x => x.trim())).filter(([ u ]) => lpUrls(u).length).map(([ u, t ]) => ({ u: u, t: (t || "").slice(0, 40) })).slice(0, 6);
+
+const ADDV = (d, x) => {
+  x = x || {};
+  const M = x.media || {}, proof = (x.proof || []).slice(0, 4), st = x.stats || {};
+  const hd = lpUrls(M.hero_d), hm = lpUrls(M.hero_m), cd = lpUrls(M.cta_d), cm = lpUrls(M.cta_m), tiles = lpTiles(M.tiles), ph = lpUrls(M.phone)[0] || "";
+  const hoodN = HOODS_LIVE().length, exHood = E(x.hoodName || (HOODS_LIVE()[0] ? HOODS_LIVE()[0].name : S.city));
+  const bg = E(x.img || HERO_IMG);
+  return PAGE(d, {
+  title: `List your ${S.city} business free | ${S.brand}`,
+  desc: `${S.city} customers are searching right now. Add your business to ${S.brand} free — verified in 30 seconds and live straight away.`,
+  can: S.dom + "/join",
+  img: x.img || HERO_IMG,
+  body: `<style>
+.v-hero{position:relative;overflow:hidden;background:${T.navy} url('${bg}') center/cover;color:#fff;isolation:isolate}
+.v-vid{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 1.1s ease;z-index:-2}.v-vid.on{opacity:1}
+.v-hero:after{content:"";position:absolute;inset:0;z-index:-1;background:linear-gradient(180deg,rgba(18,38,63,.25) 0%,rgba(18,38,63,.1) 40%,rgba(18,38,63,.7) 100%)}
+.v-in{max-width:1180px;margin:0 auto;padding:30px 18px 34px;display:grid;gap:22px}
+.v-pill{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.14);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:700;letter-spacing:.01em}
+.v-pill i{width:8px;height:8px;border-radius:50%;background:#4ADE80;box-shadow:0 0 0 4px rgba(74,222,128,.25)}
+.v-h1{font-family:${T.serif};font-weight:700;font-size:clamp(38px,9.5vw,68px);line-height:1;letter-spacing:-.02em;margin:16px 0 14px;color:#fff;text-shadow:0 2px 30px rgba(0,0,0,.35)}
+.v-h1 em{font-style:italic;font-weight:600;color:#FFB59E}
+.v-sub{font-size:17px;line-height:1.55;color:#E8EEF5;max-width:540px;margin:0 0 18px;text-shadow:0 1px 12px rgba(0,0,0,.35)}
+.v-ticks{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:14px;font-weight:600;color:#fff;margin:0 0 18px;padding:0;list-style:none}.v-ticks li:before{content:"✓";color:#4ADE80;margin-right:7px;font-weight:800}
+.v-proof{display:flex;align-items:center;gap:12px;font-size:13.5px;color:#DCE4EE}.v-proof b{color:#fff}
+.v-av{display:flex}.v-av span{width:34px;height:34px;border-radius:50%;overflow:hidden;border:2px solid #fff;margin-left:-8px;background:${T.sand}}.v-av span:first-child{margin-left:0}.v-av img{width:100%;height:100%;object-fit:cover}
+.v-dots{display:flex;gap:6px;margin-top:20px}.v-dots i{height:3px;width:22px;border-radius:2px;background:rgba(255,255,255,.3);overflow:hidden;position:relative}.v-dots i.on:after{content:"";position:absolute;inset:0;background:#fff;animation:vbar 7.9s linear forwards}
+@keyframes vbar{from{transform:translateX(-100%)}to{transform:none}}
+.v-hero .lpx-card{grid-area:auto;align-self:center;box-shadow:0 30px 80px rgba(0,0,0,.35);max-width:520px;width:100%;justify-self:end}
+.v-hero:before{content:"";position:absolute;inset:0;z-index:-1;background:linear-gradient(90deg,rgba(18,38,63,.72) 0%,rgba(18,38,63,.3) 50%,rgba(18,38,63,0) 75%)}
+.v-band{background:${T.navy};color:#fff;border-top:1px solid rgba(255,255,255,.08)}
+.v-band-in{max-width:1180px;margin:0 auto;padding:22px 18px;display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+.v-band b{display:block;font-family:${T.serif};font-size:30px;line-height:1.1}.v-band span{font-size:13px;color:#B8C4D2}
+.v-sec{max-width:1180px;margin:0 auto;padding:56px 18px}
+.v-k{color:${T.coral};font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}
+.v-h2{font-family:${T.serif};font-weight:700;font-size:clamp(28px,6vw,44px);line-height:1.08;letter-spacing:-.01em;color:${T.navy};margin:10px 0 12px}
+.v-p{color:${T.body};font-size:16px;line-height:1.6;max-width:600px;margin:0 0 26px}
+.v-tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.v-tile{position:relative;border-radius:18px;overflow:hidden;aspect-ratio:4/5;background:${T.navy};color:#fff;text-decoration:none;display:block}
+.v-tile video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:transform 6s ease}.v-tile:hover video{transform:scale(1.06)}
+.v-tile:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(18,38,63,0) 45%,rgba(18,38,63,.9))}
+.v-tile b{position:absolute;left:14px;right:14px;bottom:12px;z-index:1;font-size:15px;line-height:1.25}.v-tile b small{display:block;font-size:12px;font-weight:600;color:#FFB59E;margin-top:3px}
+.v-split{display:grid;gap:26px;align-items:center}
+.v-media{position:relative;border-radius:22px;overflow:hidden;background:${T.navy};aspect-ratio:16/11}
+.v-media video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.v-float{position:absolute;left:14px;right:14px;bottom:14px;display:grid;gap:8px;z-index:1}
+.v-msg{background:rgba(255,255,255,.95);backdrop-filter:blur(6px);border-radius:14px;padding:11px 13px;font-size:13px;color:${T.ink};box-shadow:0 10px 30px rgba(0,0,0,.25);opacity:0;transform:translateY(12px);transition:.6s}
+.v-msg small{display:block;color:${T.muted};font-size:11.5px;margin-bottom:2px}.in .v-msg{opacity:1;transform:none}.in .v-msg:nth-child(2){transition-delay:.5s}.in .v-msg:nth-child(3){transition-delay:1s}
+.v-rank{background:#fff;border:1px solid ${T.line};border-radius:22px;padding:16px;box-shadow:${T.shadowLg}}
+.v-rank .r{display:flex;align-items:center;gap:12px;padding:10px;border-radius:14px}.v-rank .r+.r{margin-top:6px}
+.v-rank .r.me{background:${T.tealSoft};border:2px solid ${T.teal}}.v-rank .r.dim{opacity:.55}
+.v-rank .n{width:30px;height:30px;border-radius:9px;background:${T.navy};color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:13px;flex:none}
+.v-rank .r div{flex:1;min-width:0;font-size:13.5px}.v-rank .r div small{display:block;color:${T.muted};font-size:12px}.v-rank .vb{font-size:11px;font-weight:800;color:${T.teal}}
+.v-ul{list-style:none;padding:0;margin:0;display:grid;gap:10px}.v-ul li{display:flex;gap:10px;font-size:15px;color:${T.ink}}.v-ul li:before{content:"✓";color:${T.teal};font-weight:800}
+.v-steps{display:grid;gap:12px;counter-reset:s}
+.v-step{background:#fff;border:1px solid ${T.line};border-radius:18px;padding:20px;position:relative}
+.v-step:before{counter-increment:s;content:counter(s);display:flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:12px;background:${T.coral};color:#fff;font:700 18px ${T.serif};margin-bottom:12px}
+.v-step b{display:block;color:${T.navy};font-size:16.5px;margin-bottom:4px}.v-step p{margin:0;color:${T.body};font-size:14px;line-height:1.5}.v-step em{font-style:normal;font-size:11.5px;font-weight:800;color:${T.teal};background:${T.tealSoft};border-radius:999px;padding:2px 8px;margin-left:6px}
+.v-cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.v-card{background:#fff;border:1px solid ${T.line};border-radius:16px;overflow:hidden}.v-card .ph{aspect-ratio:4/3;background:#fff;overflow:hidden;border-bottom:1px solid ${T.lineSoft}}.v-card .ph img{width:100%;height:100%;object-fit:contain;padding:16px;box-sizing:border-box}
+.v-card div.t{padding:10px 12px;font-size:13.5px;font-weight:700;color:${T.navy};line-height:1.3}.v-card small{display:block;font-weight:600;color:${T.muted};font-size:12px;margin-top:2px}.v-card .vb{display:inline-block;margin-top:6px;font-size:11px;font-weight:800;color:${T.teal};background:${T.tealSoft};border-radius:999px;padding:2px 8px}
+.v-end{position:relative;overflow:hidden;color:#fff;text-align:center;background:${T.navy} url('${bg}') center/cover;isolation:isolate}
+.v-end:after{content:"";position:absolute;inset:0;z-index:-1;background:radial-gradient(ellipse at center,rgba(18,38,63,.55) 0%,rgba(18,38,63,.35) 60%,rgba(18,38,63,.6) 100%)}
+.v-end .v-in{display:block;padding:90px 20px}.v-end .v-h2{color:#fff;margin:0 auto 12px;max-width:760px}.v-end p{color:#E8EEF5;font-size:17px;margin:0 0 24px}
+.v-cta{display:inline-block;background:${T.coral};color:#fff;font-weight:800;font-size:16.5px;border-radius:999px;padding:17px 30px;text-decoration:none;box-shadow:0 14px 34px rgba(228,87,46,.45)}
+.v-faq details{background:#fff;border:1px solid ${T.line};border-radius:14px;padding:15px 17px;margin-bottom:10px}.v-faq summary{font-weight:700;color:${T.navy};cursor:pointer}.v-faq p{margin:10px 0 0;color:${T.body};line-height:1.55}
+@media(min-width:900px){.v-in{grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);align-items:center;gap:56px;padding:70px 32px 70px;min-height:min(86vh,820px)}.v-band-in{grid-template-columns:repeat(4,1fr);padding:26px 32px}.v-sec{padding:84px 32px}.v-tiles{grid-template-columns:repeat(${Math.max(2, Math.min(tiles.length, 5))},1fr);gap:14px}.v-split{grid-template-columns:1fr 1fr;gap:56px}.v-split.r>:first-child{order:2}.v-steps{grid-template-columns:repeat(3,1fr)}.v-cards{grid-template-columns:repeat(4,1fr)}.v-two{display:grid;grid-template-columns:.8fr 1.2fr;gap:56px}.v-end .v-in{padding:150px 32px;min-height:0}}
+@media(max-width:899px){.v-hero:before{background:linear-gradient(180deg,rgba(18,38,63,.78) 0%,rgba(18,38,63,.55) 45%,rgba(18,38,63,.2) 70%,rgba(18,38,63,.6) 100%)}}
+@media(prefers-reduced-motion:reduce){.v-vid,.v-tile video,.v-media video{display:none}.v-msg{opacity:1;transform:none}}
+</style>
+<section class="v-hero">${hd.length || hm.length ? `<video class="v-vid" id="hvA" muted playsinline preload="auto" aria-hidden="true"></video><video class="v-vid" id="hvB" muted playsinline preload="none" aria-hidden="true"></video>` : ""}
+<div class="v-in"><div>
+<span class="v-pill"><i></i>🏆 ${E(BRAG())}</span>
+<h1 class="v-h1">${E(S.city)} is open for business. <em>Make sure customers find yours.</em></h1>
+<p class="v-sub">Every day, locals search ${E(S.brand)} for someone like you. Add your business free — verified with a code in 30 seconds and live straight away.</p>
+<ul class="v-ticks"><li>Free forever</li><li>No credit card</li><li>Live today</li></ul>
+<div class="v-proof">${proof.length ? `<span class="v-av">${proof.map(b => `<span>${PHOTO(b)}</span>`).join("")}</span>` : ""}<span>Join <b>${NUM(d.count || 0)}</b> ${E(S.city)} businesses</span></div>
+${hd.length > 1 || hm.length > 1 ? `<div class="v-dots" id="hvDots">${(hd.length >= hm.length ? hd : hm).map((_, i) => `<i${i ? "" : ` class="on"`}></i>`).join("")}</div>` : ""}
+</div>
+${ADDCARD(x)}
+</div></section>
+<div class="v-band"><div class="v-band-in"><div><b>${NUM(d.count || 0)}</b><span>${E(S.city)} businesses listed</span></div>${st.owners ? `<div><b>${NUM(st.owners)}</b><span>owners already verified</span></div>` : `<div><b>#1</b><span>${E(BRAGDIR())} in ${E(S.city)}</span></div>`}<div><b>${hoodN}</b><span>${E(AREA.los)} covered</span></div><div><b>$0</b><span>free forever, no card</span></div></div></div>
+${tiles.length ? `<section class="v-sec"><div class="v-k">Made for local businesses</div><h2 class="v-h2">Whatever you do, ${E(S.city)} is looking for it.</h2><p class="v-p">Contractors, cleaners, salons, landscapers, restaurants — every local business gets its own page where customers can call, message and find you.</p>
+<div class="v-tiles">${tiles.map(t => `<a class="v-tile" href="#start"><video muted playsinline loop preload="none" data-src="${E(t.u)}" aria-hidden="true"></video><b>${E(t.t || "Your business")}<small>Add yours free →</small></b></a>`).join("")}</div></section>` : ""}
+<section class="v-sec"${tiles.length ? ` style="padding-top:0"` : ""}><div class="v-split"><div><div class="v-k">Get found</div><h2 class="v-h2">Show up when locals search for what you do.</h2><p class="v-p">Your page sits in your category and ${E(AREA.lo)}, built to show up on Google for searches like “plumber in ${exHood}”.</p><ul class="v-ul"><li>Listed in your category and ${E(AREA.lo)} guides</li><li>Eligible for “${E(S.city)}'s Best” top-10 lists</li><li>A Verified badge that builds trust</li></ul></div>
+<div class="v-rank"><div class="r me"><span class="n">1</span><div><b>Your Business</b> <span class="vb">✓ VERIFIED</span><small>★ 4.9 (128) · ${exHood}</small></div></div><div class="r dim"><span class="n">2</span><div><b>Another Local Co.</b><small>★ 4.6 (54) · ${exHood}</small></div></div><div class="r dim"><span class="n">3</span><div><b>City Pros</b><small>★ 4.4 (31) · ${exHood}</small></div></div></div></div></section>
+<section class="v-sec" style="padding-top:0"><div class="v-split r"><div><div class="v-k">Get customers</div><h2 class="v-h2">Customers reach you directly. No middleman.</h2><p class="v-p">Messages from your page land straight in your inbox, and the Call and Directions buttons send customers your way. No fee per lead, ever.</p><ul class="v-ul"><li>Call, directions and website buttons</li><li>Hours with a live “Open now” badge</li><li>Update photos, services and offers from your phone</li></ul></div>
+<div class="v-media" id="vMsg">${ph ? `<video muted playsinline loop preload="none" data-src="${E(ph)}" aria-hidden="true"></video>` : ""}<div class="v-float"><div class="v-msg"><small>📩 New message · 2 min ago</small><b>Maria G.</b> — “Do you have time Saturday morning? Looking for a quote.”</div><div class="v-msg"><small>📞 From your page · today</small><b>A customer tapped “Call”</b></div><div class="v-msg"><small>👀 This week</small><b>248 views</b> · 19 direction requests</div></div></div></div></section>
+<section class="v-sec" style="padding-top:0"><div class="v-k">How it works</div><h2 class="v-h2">Live in 3 simple steps.</h2><p class="v-p">No website needed. No tech skills needed.</p>
+<div class="v-steps"><div class="v-step"><b>Tell us about your business <em>3 min</em></b><p>Fill in the short form — name, phone, ZIP and what you do.</p></div><div class="v-step"><b>Verify with a code <em>30 sec</em></b><p>We text or email you a 6-digit code to prove it's really you.</p></div><div class="v-step"><b>You're live <em>today</em></b><p>Your page goes live with a Verified badge, and customers start finding you.</p></div></div></section>
+${proof.length ? `<section class="v-sec" style="padding-top:0"><div class="v-k">Already on ${E(S.brand)}</div><h2 class="v-h2">Join ${E(S.city)} businesses like these.</h2><div class="v-cards">${proof.map(b => `<div class="v-card"><div class="ph">${PHOTO(b)}</div><div class="t">${E(b.name)}<small>${E(b.cat || "")}${b.hood ? " · " + E(hoodName(b.hood) || b.hood) : ""}</small><span class="vb">✓ Verified</span></div></div>`).join("")}</div></section>` : ""}
+<section class="v-sec v-two" style="padding-top:0"><div><div class="v-k">Questions</div><h2 class="v-h2">Questions owners ask.</h2>${PRIVBOX("Your name, email and phone are only used to verify ownership. They are never published.")}</div>
+<div class="v-faq"><details open><summary>Is it really free?</summary><p>Yes. ${S.freeOnly ? "Listing your business is free — no credit card, no contract, no paid plans." : "A basic listing is free forever — no credit card, no contract. Paid plans are optional extras."}</p></details><details><summary>My business might already be listed.</summary><p><a href="${x.fb ? "/owners" : "/claim"}">Search for it here</a> — claiming is free and lets you edit everything.</p></details><details><summary>Do I need a website?</summary><p>No. Your page works as your web presence, with hours, photos and a contact form.</p></details><details><summary>How long until I'm live?</summary><p>Straight away — as soon as you enter the code we text or email you.</p></details></div></section>
+<section class="v-end">${cd.length || cm.length ? `<video class="v-vid on" id="ctaV" muted playsinline loop preload="none" aria-hidden="true"></video>` : ""}<div class="v-in"><h2 class="v-h2">Your next customer is searching right now.</h2><p>Free forever. Takes 3 minutes.</p><a class="v-cta" href="#start">Add my business free →</a></div></section>
+<a class="lpx-sticky" id="lpxSticky" href="#start">Add my business — free</a>
+${ADDJS}
+<script>(function(){
+var M=${SJ({ d: hd, m: hm, cd: cd, cm: cm })};
+var still=(window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches)||(navigator.connection&&navigator.connection.saveData);
+var tall=window.matchMedia&&matchMedia("(max-aspect-ratio: 4/5)").matches;
+var list=tall&&M.m.length?M.m:M.d.length?M.d:M.m;
+var A=document.getElementById("hvA"),B=document.getElementById("hvB"),dots=document.querySelectorAll("#hvDots i");
+if(!still&&A&&list.length){
+var i=0,cur=A,nxt=B,busy=false;
+function set(v,src){if(v.getAttribute("src")!==src){v.src=src;v.load()}}
+function dot(k){for(var j=0;j<dots.length;j++){dots[j].className="";if(j===k){void dots[j].offsetWidth;dots[j].className="on"}}}
+set(A,list[0]);A.addEventListener("canplay",function f(){A.removeEventListener("canplay",f);A.classList.add("on")});A.play().catch(function(){});
+if(list.length===1)A.loop=true;else{B.preload="auto";
+function tick(){if(busy||!cur.duration||cur.currentTime<cur.duration-1.1)return;busy=true;i=(i+1)%list.length;set(nxt,list[i]);nxt.currentTime=0;
+var p=nxt.play();(p&&p.then?p:Promise.resolve()).then(function(){nxt.classList.add("on");cur.classList.remove("on");dot(i);setTimeout(function(){var o=cur;cur=nxt;nxt=o;busy=false;set(nxt,list[(i+1)%list.length])},1200)}).catch(function(){busy=false})}
+A.addEventListener("timeupdate",tick);B.addEventListener("timeupdate",tick);setTimeout(function(){set(B,list[1])},1500)}}
+function lazy(v,src){if(!v||!src||still)return;var on=false;if(!("IntersectionObserver" in window)){v.src=src;v.play().catch(function(){});return}
+new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){if(!on){v.src=src;on=true}v.play().catch(function(){})}else if(on)v.pause()})},{rootMargin:"200px"}).observe(v)}
+document.querySelectorAll("video[data-src]").forEach(function(v){lazy(v,v.getAttribute("data-src"))});
+var C=document.getElementById("ctaV");if(C)lazy(C,tall&&M.cm.length?M.cm[0]:(M.cd[0]||M.cm[0]));
+var m=document.getElementById("vMsg");if(m&&"IntersectionObserver" in window)new IntersectionObserver(function(es){if(es[0].isIntersecting)m.classList.add("in")},{threshold:.4}).observe(m);else if(m)m.classList.add("in");
+try{if(window.fbq)fbq("track","ViewContent",{content_name:"List your business (Facebook)"})}catch(e){}
 })();<\/script>`
+  });
+};
+
+const ADMINLPMEDIA = (role, M, ok) => `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex, nofollow">
+<title>Landing videos — Admin | ${S.brand}</title><style>${CSS}</style></head><body>
+${ADMINNAV("/admin/lp-media", role)}
+<div class="wrap" style="padding:36px 24px 60px;max-width:820px">
+<h1 style="margin-bottom:6px">Landing page videos</h1>
+<p style="color:${T.muted};margin-bottom:20px">Videos for the ad landing page <a href="/join" target="_blank">/join</a>. Paste full https links to .mp4 files, one per line. Leave a box empty to show the city photo instead.</p>
+${ok ? `<div class="note note-ok" style="margin-bottom:16px">${E(ok)}</div>` : ""}
+<form method="POST" action="/admin/lp-media" class="blk">
+${[ [ "hero_d", "Hero — computer (16:9), in play order" ], [ "hero_m", "Hero — phone (9:16), same order" ], [ "cta_d", "Final call to action — computer (16:9)" ], [ "cta_m", "Final call to action — phone (9:16)" ], [ "tiles", "Business-type tiles — one per line: link | label (e.g. https://…/b1.mp4 | Contractors & trades)" ], [ "phone", "“Customers reach you” video (16:9)" ] ].map(([ k, l ]) => `<div class="fld2"><label for="lp_${k}">${E(l)}</label><textarea id="lp_${k}" name="${k}" rows="${k === "tiles" || k.startsWith("hero") ? 5 : 2}" style="font-family:monospace;font-size:12px">${E(M[k] || "")}</textarea></div>`).join("")}
+<button class="btn btn-p">Save</button></form></div></body></html>`;
+
+const ADD = (d, x) => {
+  x = x || {};
+  const proof = (x.proof || []).slice(0, 5);
+  const seo = SEOTXT("add", `List your ${S.city} business free | ${S.brand}`, `Get found by ${S.city} customers. Add your business to ${S.brand} free — verified by a local team and live in 1–2 days.`);
+  const hoodN = HOODS_LIVE().length;
+  const lpRow = (name, sub, b, cls, rank, ver) => `<div class="lpx-row ${cls || ""}"><span class="lpx-rph">${b ? PHOTO(b) : ""}${rank ? `<em>#${rank}</em>` : ""}</span><span>${ver ? `<i class="lpx-v">✓ VERIFIED</i>` : ""}<b>${name}</b>${sub}</span></div>`;
+  const exHood = E(x.hoodName || (HOODS_LIVE()[0] ? HOODS_LIVE()[0].name : S.city));
+  return PAGE(d, {
+  title: seo.title,
+  desc: seo.desc,
+  can: S.dom + (x.fb ? "/join" : "/add"),
+  ld: x.fb ? undefined : SEOLD("add"),
+  body: `<section class="lpx-hero"${x.img ? ` style="background-image:url('${E(x.img)}')"` : ""}><div class="lpx-in">
+<div class="lpx-top"><span class="lpx-k"><i></i> 🏆 ${E(BRAG())}</span>
+<h1>${AREA.byCity ? `Customers across ${E(S.city)} are looking.` : `${E(S.city)} customers are looking.`} <em>Make sure they find you.</em></h1></div>
+<div class="lpx-bot"><p class="lpx-s">List your business on ${E(S.city)}'s #1 ${E(BRAGDIR())} — free, verified in 30 seconds with a code, and live straight away.</p>
+<ul class="lpx-li"><li><span>✓</span><div><b>Free forever</b> — no credit card, no contract</div></li><li><span>✓</span><div><b>Your own Google-friendly page</b> in your ${E(AREA.lo)}</div></li><li><span>✓</span><div><b>Customer enquiries</b> straight to your inbox</div></li></ul>
+<div class="lpx-proof">${proof.length ? `<span class="lpx-av">${proof.map(b => `<span>${PHOTO(b)}</span>`).join("")}</span>` : ""}<span>Join <b>${NUM(d.count || 0)}</b> ${E(S.city)} businesses</span></div></div>
+${ADDCARD(x)}
+</div></section>
+<div class="wrap">
+<div class="lpx-stats"><div><b>#1</b><span>${E(BRAGDIR())} in ${E(S.city)}</span></div><div><b>${NUM(d.count || 0)}</b><span>businesses listed</span></div><div><b>${hoodN}</b><span>${E(S.city)} ${E(AREA.los)}</span></div><div><b>30 sec</b><span>to go live</span></div></div>
+<div class="lpx-feat"><div><div class="lpx-kk">Get found</div><h2>Show up when locals search for what you do</h2><p>Every business gets its own page in its category and ${E(AREA.lo)} — built to show up on Google for searches like "plumber in ${exHood}".</p><ul><li>Listed in your category and ${E(AREA.lo)} guides</li><li>Eligible for "${E(S.city)}'s Best" top-10 lists</li><li>Verified badge that builds trust</li></ul></div>
+<div class="lpx-vis"><span class="lpx-ex">Example</span>${lpRow("Your Business", `★ 4.9 (128) · Plumber · ${exHood}`, proof[0], "me", 1, 1)}${lpRow("Another Plumbing Co.", `★ 4.6 (54) · Plumber · ${exHood}`, null, "dim", 2)}${lpRow("City Drain Pros", `★ 4.4 (31) · Plumber · ${exHood}`, null, "dim", 3)}</div></div>
+<div class="lpx-feat r"><div><div class="lpx-kk">Get customers</div><h2>Customers message you directly</h2><p>Enquiries from your page land straight in your inbox. No middleman, no fee per lead.</p><ul><li>Call, directions and website buttons on your page</li><li>Hours with a live "Open now" badge</li><li>Add photos, services and offers from your phone</li></ul></div>
+<div class="lpx-vis"><span class="lpx-ex">Example</span><div class="lpx-msg"><div class="t"><span>📩 New enquiry · Your Business</span><span>2 min ago</span></div><b>Maria G.</b> — "Hi! Do you have availability this Saturday morning? Looking for a quote."</div><div class="lpx-msg" style="margin-left:40px"><div class="t"><span>📞 Call from your page</span><span>Today</span></div><b>A customer</b> tapped "Call"</div><div class="lpx-msg"><div class="t"><span>👀 Your page this week</span></div><b style="font-size:22px">248 views</b> · 19 direction requests</div></div></div>
+<div class="lpx-h"><h2>Live in 3 simple steps</h2><p>No website needed. No tech skills needed.</p></div>
+<div class="lpx-steps"><div><b>Tell us about your business</b><p>Fill in the short form above — about 3 minutes.</p></div><div><b>Verify with a code</b><p>We text or email you a 6-digit code — it takes 30 seconds.</p></div><div><b>You're live straight away</b><p>Your page goes live with a Verified badge, and customers start finding you.</p></div></div>
+<div class="lpx-h"><h2>Questions owners ask</h2></div>
+<div class="lpx-faq"><details open><summary>Is it really free?</summary><p>Yes. ${S.freeOnly ? "Listing your business is free — no credit card, no contract, no paid plans." : `A basic listing is free forever — no credit card, no contract. <a href="/pricing">Paid plans</a> are optional extras.`}</p></details><details><summary>My business might already be listed.</summary><p>Search for it on the <a href="/claim">Claim page</a> — claiming is free and lets you edit everything.</p></details><details><summary>Do I need a website?</summary><p>No. Your page works as your web presence, with hours, photos and a contact form.</p></details><details><summary>How long until I'm live?</summary><p>Straight away — as soon as you enter the code we text or email you. If you can't get the code, our team checks your details instead, usually within 1–2 business days.</p></details></div>
+</div>
+<section class="lpx-end"><h2>Ready to be found in ${E(S.city)}?</h2><p>Free forever. Takes 3 minutes.</p><a href="#start">Add my business free ↑</a></section>
+<a class="lpx-sticky" id="lpxSticky" href="#start">Add my business — free</a>
+${ADDJS}`
   });
 };
 
@@ -9146,7 +9289,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.90-shared";
+const BUILD = "v16.91-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -11113,6 +11256,26 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
           }
         }
         return new Response(ADMINCLAIMINVITES(role, link, biz, err, u.searchParams.get("ok") || ""), {
+          headers: {
+            "content-type": "text/html;charset=UTF-8",
+            "cache-control": "no-store"
+          }
+        });
+      }
+      if (p[0] === "admin" && p[1] === "lp-media") {
+        if (role !== "admin") return Response.redirect(AUTH.SITE_URL + "/admin/pending", 302);
+        let ok = "";
+        if (req.method === "POST") {
+          const f = await req.formData(), M = {};
+          for (const k of LPMEDIA_KEYS) M[k] = String(f.get(k) || "").replace(/\r/g, "").trim().slice(0, 4000);
+          await DB.prepare("INSERT INTO meta(k,v) VALUES('lp_media',?1) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(JSON.stringify(M)).run();
+          ok = `Saved. Hero: ${lpUrls(M.hero_d).length} computer + ${lpUrls(M.hero_m).length} phone clips; ${lpTiles(M.tiles).length} tiles.`;
+        }
+        let M = {};
+        try {
+          M = JSON.parse((await DB.prepare("SELECT v FROM meta WHERE k='lp_media'").first() || {}).v || "{}") || {};
+        } catch {}
+        return new Response(ADMINLPMEDIA(role, M, ok), {
           headers: {
             "content-type": "text/html;charset=UTF-8",
             "cache-control": "no-store"
@@ -14431,7 +14594,17 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         proof = ((await DB.prepare("SELECT * FROM businesses WHERE claimed=1 AND logo LIKE 'http%' ORDER BY rev DESC LIMIT 12").all()).results || []).map(ROWOF).filter(b => bizImg(b) !== DEFAULT_LISTING_IMG).slice(0, 5);
       } catch {}
       await loadCatMap(DB);
-      if (p[0] === "join") return FBPAGE(R(ADD(d, { img: img, proof: proof, hoodName: topHood, fb: true }) .replace("</body>", `<script>try{if(window.fbq)fbq('track','ViewContent',{content_name:'List your business (Facebook)'})}catch(e){}<\/script></body>`)), u, "join");
+      if (p[0] === "join") {
+        let media = {};
+        try {
+          media = JSON.parse((await DB.prepare("SELECT v FROM meta WHERE k='lp_media'").first() || {}).v || "{}") || {};
+        } catch {}
+        if (!OL_STATS.t || Date.now() - OL_STATS.t > 6e5) try {
+          const r = await DB.prepare("SELECT COUNT(*) n, SUM(CASE WHEN owner_email<>'' THEN 1 ELSE 0 END) o FROM businesses").first();
+          OL_STATS.t = Date.now(), OL_STATS.listings = Math.floor((r.n || 0) / 100) * 100, OL_STATS.owners = r.o || 0;
+        } catch {}
+        return FBPAGE(R(ADDV(d, { img: img, proof: proof, hoodName: topHood, fb: true, media: media, stats: OL_STATS })), u, "join");
+      }
       return R(ADD(d, { img: img, proof: proof, hoodName: topHood }));
     }
     if (p[0] === "blog" && !p[1]) {
@@ -15353,7 +15526,7 @@ export default {
     if (cacheState === "HIT") h.set("cache-control", "public, max-age=120"); else if (cacheState === "BYPASS" && /(?:^|;\s*)(gl_sess|gl_adm)=[^;\s]/.test(req.headers.get("Cookie") || "")) h.set("cache-control", "private, no-cache");
     // Meta Pixel hosts only when the city has a Pixel (v16.88: v16.86 left them out, so browsers blocked the Pixel).
     const fbS = S.metaPixel ? " https://connect.facebook.net" : "", fbC = S.metaPixel ? " https://connect.facebook.net https://www.facebook.com" : "";
-    h.set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://cdn.jsdelivr.net https://static.cloudflareinsights.com" + fbS + "; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; frame-src https://www.google.com; connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com https://analytics.google.com https://*.analytics.google.com https://www.googletagmanager.com https://www.google.com https://cloudflareinsights.com" + fbC + "; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; manifest-src 'self'; worker-src 'self'");
+    h.set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://cdn.jsdelivr.net https://static.cloudflareinsights.com" + fbS + "; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; frame-src https://www.google.com; connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com https://analytics.google.com https://*.analytics.google.com https://www.googletagmanager.com https://www.google.com https://cloudflareinsights.com" + fbC + "; media-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; manifest-src 'self'; worker-src 'self'");
     h.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     h.set("X-Frame-Options", "DENY");
     h.set("X-Content-Type-Options", "nosniff");
