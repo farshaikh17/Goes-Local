@@ -398,16 +398,16 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const px43 = await px43r.text();
   ok(/script-src[^;]*https:\/\/connect\.facebook\.net/.test(csp43) && /connect-src[^;]*https:\/\/www\.facebook\.com/.test(csp43), "T43b security header lets the Meta Pixel script load and report", csp43.slice(0, 80));
   ok(/fbq\('init','123456789012345'\)/.test(px43) && /track','Lead'/.test(px43) && /fbclid/.test(px43), "T43 Meta Pixel from the city setting, Lead on form sends, fbclid counts as Facebook", px43.length);
-  // T44 the Facebook owner landing page: search finds a listing with a Claim button into the normal flow; not indexed
-  const o44 = await F(BASE + "/owners?q=QA%20Three&utm_source=facebook&utm_medium=paid&utm_campaign=t44");
+  // T44 /join's "Already listed?" search finds a listing with a Claim button into the normal claim flow; /owners redirects there
+  const o44 = await F(BASE + "/join?q=QA%20Three&utm_campaign=t44");
   const o44h = await o44.text();
-  ok(o44.status === 200 && /Find your business to claim it/.test(o44h) && /QA Three HVAC/.test(o44h) && /\/claim\/start\?id=QA3|Already claimed/.test(o44h) && /noindex/.test(o44.headers.get("x-robots-tag") || "") && /track','ViewContent'/.test(o44h), "T44 /owners landing page: search + Claim into the normal flow, ViewContent, not indexed", o44.status + " " + o44.headers.get("x-robots-tag"));
-  // T45 Facebook pages: /join is the List-your-business page with the same form, marks the visitor as Facebook, links
-  // claims to /owners (also Facebook), and neither is indexed
+  const r44 = await F(BASE + "/owners?q=QA", { redirect: "manual" });
+  ok(o44.status === 200 && /id="claim"/.test(o44h) && /QA Three HVAC/.test(o44h) && /\/claim\/start\?id=QA3|Claimed · Log in/.test(o44h) && /noindex/.test(o44.headers.get("x-robots-tag") || "") && r44.status === 301 && /\/join\?q=QA#claim/.test(r44.headers.get("location") || ""), "T44 /join claim search + Claim into the normal flow; /owners redirects to it", o44.status + " " + r44.status + " " + r44.headers.get("location"));
+  // T45 Facebook page: /join is the List-your-business page with the same form, marks the visitor as Facebook, links
+  // claims to its own search, and isn't indexed; the security header lets Meta's tools load
   const j45 = await F(BASE + "/join?utm_campaign=t45");
-  const j45h = await j45.text(), j45c = j45.headers.get("set-cookie") || "";
-  const o45 = await F(BASE + "/owners");
-  ok(j45.status === 200 && /id="addBizForm"/.test(j45h) && /action="\/api\/lead"/.test(j45h) && /href="\/owners"/.test(j45h) && /gl_attr=[^;]*facebook[^;]*t45/.test(decodeURIComponent(j45c)) && /noindex/.test(j45.headers.get("x-robots-tag") || "") && /ViewContent/.test(j45h) && /gl_attr=[^;]*facebook/.test(decodeURIComponent(o45.headers.get("set-cookie") || "")), "T45 /join = List your business form for Facebook (cookie, claim link to /owners, ViewContent, not indexed)", j45.status + " " + decodeURIComponent(j45c).slice(0, 90));
+  const j45h = await j45.text(), j45c = j45.headers.get("set-cookie") || "", csp45 = j45.headers.get("content-security-policy") || "";
+  ok(j45.status === 200 && /id="addBizForm"/.test(j45h) && /action="\/api\/lead"/.test(j45h) && /href="#claim"/.test(j45h) && /gl_attr=[^;]*facebook[^;]*t45/.test(decodeURIComponent(j45c)) && /noindex/.test(j45.headers.get("x-robots-tag") || "") && /ViewContent/.test(j45h) && /frame-src[^;]*www\.facebook\.com/.test(csp45) && /script-src[^;]*www\.facebook\.com/.test(csp45), "T45 /join = List your business form for Facebook (cookie, claim search link, ViewContent, not indexed, Meta tools allowed)", j45.status + " " + decodeURIComponent(j45c).slice(0, 90));
   // T46 Admin → Landing videos saves the city's clips and /join plays them (none saved = the city photo)
   const lp46 = await F(BASE + "/admin/lp-media", { method: "POST", headers: { cookie: (lg.headers.get("set-cookie") || "").split(";")[0] }, body: new URLSearchParams({ hero_d: "https://example.com/a.mp4\nhttps://example.com/b.mp4\nnot-a-link", hero_m: "", cta_d: "", cta_m: "", tiles: "https://example.com/t.mp4 | Contractors", phone: "" }) });
   const j46 = await (await F(BASE + "/join")).text();
