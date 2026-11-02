@@ -1,5 +1,5 @@
 // QA suite for business verification (local wrangler dev on :8791, BV_TEST_ECHO=1, local D1/KV).
-// How to run: start `npx wrangler dev --env tampa --local --test-scheduled --port 8791 --env-file <vars with ADMIN_LOGIN_KEY=localtestkey123, BV_TEST_ECHO=1> --persist-to <dir>/wstate` logging to <dir>/dev.log, run /admin/migrate, then run this file from <dir>.
+// How to run: start `npx wrangler dev --env tampa --local --test-scheduled --port 8791 --env-file <vars with ADMIN_LOGIN_KEY=localtestkey123, BV_TEST_ECHO=1, CITY_META_PIXEL=123456789012345> --persist-to <dir>/wstate` logging to <dir>/dev.log, run /admin/migrate, then run this file from <dir>.
 const { execSync } = require("child_process");
 const fs = require("fs");
 const SP = __dirname, BASE = "http://localhost:8791", REPO = "/home/user/Goes-Local";
@@ -14,6 +14,7 @@ const kvList = prefix => {
   const out = execSync(`${W} kv key list --binding SESSIONS --env tampa --local --persist-to ${SP}/wstate --prefix ${prefix}`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   return JSON.parse(out.slice(out.indexOf("["))).map(k => k.name);
 };
+const lastOv = () => { const m = fs.readFileSync(LOG, "utf8").match(/OV TEST CODE (\d{6})/g); return m ? m[m.length - 1].slice(-6) : ""; };
 const lastCode = () => { const m = fs.readFileSync(LOG, "utf8").match(/BV TEST CODE (\d{6})/g); return m ? m[m.length - 1].slice(-6) : ""; };
 const txt = h => h.replace(/<script[\s\S]*?<\/script>/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 let n = 0, fails = 0;
@@ -194,6 +195,10 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   r = await post("/verify-business", { ref, code: lastCode() });
   ok(r.status === 302 && /account\?verified=1/.test(r.loc) && /gl_sess/.test(r.cookie), "T15 proven email → signed in", r.status + " " + r.loc);
   const ownerCookie = (r.cookie.match(/gl_sess=[^;]+/) || [""])[0];
+  // T15b a proven claim still owes the owner phone check before Manage opens (v16.86); later tests run as a checked owner
+  const g15 = await F(BASE + "/account", { redirect: "manual", headers: { cookie: ownerCookie } });
+  ok(g15.status === 302 && /\/manage\/confirm/.test(g15.headers.get("location") || ""), "T15b new owner is sent to the phone check before Manage", g15.status + " " + g15.headers.get("location"));
+  sql(`INSERT OR REPLACE INTO owner_verified(email,phone,verified_at) VALUES('owner@qaeight.com','+18135550100',1)`);
 
   // T16 20 parallel wrong guesses → at most 5 count; the right code is then refused
   r = await claim("QA9", "t16@example.com", "10.0.0.16");
@@ -355,8 +360,13 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const c38h = await c38.text();
   const bad38 = await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ email: "other@x.com", name: "Pat Baker", phone: "8135550100" }) });
   const bad38h = await bad38.text();
-  const ok38 = await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ email: "Owner@QAEight.com", name: "Pat Baker", phone: "8135550100", yrs: "2009" }) });
+  const det38 = await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ email: "Owner@QAEight.com", name: "Pat Baker", phone: "8135550100", yrs: "2009" }) });
+  const det38h = await det38.text();
+  const notYet38 = (sql(`SELECT activated_at FROM owner_pending WHERE ghl_id='QA8'`)[0] || {}).activated_at;
+  const wrong38 = await (await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ step: "code", code: lastOv() === "111111" ? "222222" : "111111" }) })).text();
+  const ok38 = await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ step: "code", code: lastOv() }) });
   const act38 = sql(`SELECT activated_at FROM owner_pending WHERE ghl_id='QA8'`)[0] || {};
+  ok(/Verify your phone/.test(det38h) && /•••-•••-0100/.test(det38h) && !notYet38 && /isn't right/.test(wrong38), "T38b details step texts a code to the owner's phone; not claimed until it's entered; a wrong code is refused", [ det38.status, notYet38, lastOv() ].join(" "));
   const a38b = await F(BASE + "/account", { redirect: "manual", headers: { cookie: ownerCookie } });
   ok(/\/manage\/confirm/.test(a38.headers.get("location") || "") && /QA Eight Bakery/.test(c38h) && /same email you signed in with/.test(bad38h) && ok38.status === 302 && /claimed=1/.test(ok38.headers.get("location") || "") && act38.activated_at > 0 && a38b.status === 200, "T38 held listing: owner confirms email + name + phone, then it's claimed", [ a38.status, c38.status, bad38.status, ok38.status, act38.activated_at, a38b.status ].join(" "));
   sql("DELETE FROM businesses WHERE ghl_id LIKE 'GC%'"); sql("DELETE FROM dup_hidden WHERE ghl_id LIKE 'GC%'"); sql("DELETE FROM slug_redirects WHERE ghl_id LIKE 'GC%'");
@@ -373,6 +383,18 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const t40r = await F(BASE + "/manage/team", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ id: "QA8", action: "remove", email: "staff@qaeight.com" }) });
   const t40left = sql(`SELECT COUNT(*) n FROM business_team WHERE ghl_id='QA8'`)[0].n;
   ok(/tok=/.test(t40a.headers.get("location") || "") && t40row === "staff@qaeight.com" && /data-pane="team"/.test(t40hub) && /staff@qaeight\.com/.test(t40hub) && /terr=/.test(t40bad.headers.get("location") || "") && /tok=/.test(t40r.headers.get("location") || "") && t40left === 0, "T40 Team tab: owner adds a teammate, a bad email is refused, removing works", [ t40a.headers.get("location"), t40row, t40bad.headers.get("location"), t40left ].join(" | "));
+  // T42 an owner from before the phone check is held at /manage/confirm until the texted code is entered
+  sql(`DELETE FROM owner_verified WHERE email='owner@qaeight.com'`);
+  const g42 = await F(BASE + "/manage/hub?id=QA8", { redirect: "manual", headers: { cookie: ownerCookie } });
+  const p42 = await (await F(BASE + "/manage/confirm", { headers: { cookie: ownerCookie } })).text();
+  const d42 = await (await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ email: "owner@qaeight.com", name: "Pat Baker", phone: "8135550142", yrs: "2009" }) })).text();
+  const v42 = await F(BASE + "/manage/confirm", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ step: "code", code: lastOv() }) });
+  const row42 = sql(`SELECT phone FROM owner_verified WHERE email='owner@qaeight.com'`)[0] || {};
+  const h42 = await F(BASE + "/manage/hub?id=QA8", { redirect: "manual", headers: { cookie: ownerCookie } });
+  ok(g42.status === 302 && /manage\/confirm/.test(g42.headers.get("location") || "") && /Text me a code/.test(p42) && /Verify your phone/.test(d42) && /verified=1/.test(v42.headers.get("location") || "") && row42.phone === "+18135550142" && h42.status === 200, "T42 existing owner: Manage waits for the texted phone code, then opens", [ g42.status, v42.status, v42.headers.get("location"), row42.phone, h42.status ].join(" "));
+  // T43 the city's Meta Pixel (CITY_META_PIXEL) loads on every page, with Lead on the claim/add/sign-up forms
+  const px43 = (await get("/")).html;
+  ok(/fbq\('init','123456789012345'\)/.test(px43) && /track','Lead'/.test(px43) && /fbclid/.test(px43), "T43 Meta Pixel from the city setting, Lead on form sends, fbclid counts as Facebook", px43.length);
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
   const t41pg = await get("/claim/start?id=QA3");

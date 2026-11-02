@@ -21,7 +21,9 @@ const S = {
   // simply gets no Analytics tracking until it is — it no longer silently
   // falls back to Miami's numbers. This is what was causing Orlando's real
   // visitors to get counted inside Miami's Analytics account.
-  gaIds: []
+  gaIds: [],
+  // Meta (Facebook) Pixel ID, from each city's own CITY_META_PIXEL setting in Cloudflare (Settings -> Variables).
+  metaPixel: ""
 };
 
 // What the site calls the places it groups listings into, and their page addresses.
@@ -1840,6 +1842,9 @@ async function migrate(DB, env) {
     await DB.prepare("CREATE TABLE IF NOT EXISTS business_team(ghl_id TEXT NOT NULL, email TEXT NOT NULL, added_by TEXT DEFAULT '', added_at INTEGER, PRIMARY KEY(ghl_id, email))").run();
   } catch {}
   try {
+    await DB.prepare("CREATE TABLE IF NOT EXISTS owner_verified(email TEXT PRIMARY KEY, phone TEXT DEFAULT '', verified_at INTEGER)").run();
+  } catch {}
+  try {
     await DB.prepare("ALTER TABLE pending_email_invites ADD COLUMN last_checked_at INTEGER").run();
   } catch {}
   for (const q of [ "CREATE INDEX IF NOT EXISTS ix_cs_hood_sub ON businesses(cs,hood,sub)", "CREATE INDEX IF NOT EXISTS ix_cs_sub_rank ON businesses(cs,sub,premium DESC,claimed DESC,rat DESC,rev DESC)", "CREATE INDEX IF NOT EXISTS ix_cs_rank ON businesses(cs,premium DESC,claimed DESC,rat DESC,rev DESC)", "CREATE INDEX IF NOT EXISTS ix_cs_related ON businesses(cs,plus DESC,premium DESC,rat DESC)" ]) try {
@@ -3171,6 +3176,97 @@ async function otherBranches(DB, ghlId, email) {
   }
 }
 
+// Every owner proves both the Owner Email (the sign-in code) and the Owner Phone (a code texted to it) before they can
+// manage a listing (Eric, 2 Nov: "every owner has to verify both emails and phone"; only the owner can claim — staff get
+// their own sign-in from the Team tab). Returns the listings waiting on this email's check: ones a sales Listing Verified
+// is holding (pending), else ones it already owns but hasn't phone-verified yet (owners from before 2 Nov).
+async function ownerCheck(DB, email) {
+  const em = NRM(email);
+  if (!DB || !em) return { rows: [], pending: false };
+  const held = await pendingOwner(DB, em);
+  if (held.length) return { rows: held, pending: true };
+  try {
+    if (await DB.prepare("SELECT 1 FROM owner_verified WHERE email=?1").bind(em).first()) return { rows: [], pending: false };
+    const rows = (await DB.prepare("SELECT ghl_id,name FROM businesses WHERE owner_email=?1 ORDER BY name LIMIT 20").bind(em).all()).results || [];
+    return { rows: rows, pending: false };
+  } catch {
+    return { rows: [], pending: false };
+  }
+}
+
+const OV_TTL = 30 * 60, OV_CODE_MS = 15 * 60 * 1e3, OV_MAX_TRIES = 5, OV_MAX_SENDS = 4;
+
+// Texts the owner-check code to the Owner Phone through the business contact (toNumber), so it shows on the business's
+// Conversations tab and no new contact is made. GHL may only text a number the contact has, so a refused send adds the
+// number to the contact as an extra phone (native-fields-only call) and tries again.
+async function ownerSms(env, cid, phone, message) {
+  if (!AUTH.CHANNELS.sms) return false;
+  const post = () => fetch(`${API}/conversations/messages`, {
+    method: "POST",
+    headers: {
+      ...H(env),
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      type: "SMS",
+      contactId: cid,
+      toNumber: phone,
+      message: message
+    })
+  });
+  try {
+    let r = await post();
+    if (!r.ok) {
+      const why = (await r.text()).slice(0, 200);
+      const c = await ghlGetContact(env, cid);
+      const have = c ? [ c.phone, ...(c.additionalPhones || []).map(x => x && x.phone || x) ].map(x => String(x || "").replace(/\D/g, "").slice(-10)) : [];
+      if (c && !have.includes(phone.replace(/\D/g, "").slice(-10))) {
+        const u = await fetch(`${API}/contacts/${cid}`, {
+          method: "PUT",
+          headers: {
+            ...H(env),
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(c.phone ? {
+            additionalPhones: [ ...(c.additionalPhones || []).map(x => ({ phone: x && x.phone || x })), { phone: phone } ]
+          } : {
+            phone: phone
+          })
+        });
+        if (u.ok) r = await post();
+        else console.log("owner sms: couldn't add the number to " + cid + " (" + u.status + " " + (await u.text()).slice(0, 160) + ")");
+      }
+      if (!r.ok) console.log("owner sms " + r.status + " (first try: " + why + ")" + (r.bodyUsed ? "" : ": " + (await r.text()).slice(0, 200)));
+    }
+    return r.ok;
+  } catch (e) {
+    console.log("owner sms fail: " + e.message);
+    return false;
+  }
+}
+
+async function ownerCodeSend(env, st) {
+  if (st.sends >= OV_MAX_SENDS) return "too many";
+  if (st.sentAt && Date.now() - st.sentAt < 60 * 1e3) return "wait";
+  const KV = KVOF(env), dk = "bvsms:" + new Date().toISOString().slice(0, 10);
+  if (KV) {
+    const used = parseInt(await KV.get(dk) || "0", 10);
+    if (used >= 300) return "limit";
+    await KV.put(dk, String(used + 1), {
+      expirationTtl: 2 * 86400
+    });
+  }
+  st.code = String(Math.floor(1e5 + Math.random() * 9e5));
+  st.codeAt = st.sentAt = Date.now();
+  st.sends = (st.sends || 0) + 1;
+  st.tries = 0;
+  if (env.BV_TEST_ECHO === "1") {
+    console.log("OV TEST CODE " + st.code);
+    return "";
+  }
+  return await ownerSms(env, st.cid, st.phone, `${S.brand}: ${st.code} is your owner verification code. It expires in 15 minutes. Reply STOP to opt out.`) ? "" : "failed";
+}
+
 async function activateOwner(env, email, who) {
   const DB = getDB(env), em = NRM(email);
   if (!DB || !em) return 0;
@@ -4198,8 +4294,26 @@ const CHANNEL = a => {
   return name;
 };
 
+// Facebook / Instagram ad visitors (utm_source, or Meta's fbclid on the ad link). Eric, 2 Nov: track ad leads in GHL,
+// not on the site — every contact from an ad gets the tag facebook-ad plus a tag per step (fb-claim-form, fb-sign-up,
+// fb-add-a-business, fb-owner-verified), so GHL smart lists and reports can count each step.
+const FBAD = a => /(^|\.)(facebook|instagram|fb|ig|meta)(\.|$)/i.test(String(a && a.source || "").trim());
+
+async function fbTrack(env, cid, req, step) {
+  const a = ATTR(req);
+  if (!cid || !FBAD(a)) return;
+  try {
+    const t = "fb-" + String(step).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    await ghlAddTag(env, cid, [ "facebook-ad", t ]);
+    await ghlNote(env, cid, `From a Facebook/Instagram ad: ${step}${a.campaign ? ` (campaign "${String(a.campaign).slice(0, 100)}")` : ""}${a.landing ? `, first page ${String(a.landing).slice(0, 120)}` : ""}.`);
+  } catch (e) {
+    console.log("fb track: " + e.message);
+  }
+}
+
 async function setLeadSource(env, cid, form, req) {
   if (!cid) return;
+  await fbTrack(env, cid, req, form);
   try {
     const m = await fields(env), fid = fieldId(m, "lead source");
     if (!fid) return;
@@ -4757,6 +4871,9 @@ async function approveClaim(env, DB, claimId, ghlId, email, how) {
       }
       try {
         await DB.prepare("UPDATE businesses SET claimed_at=?1 WHERE ghl_id=?2 AND claimed_at IS NULL").bind(Date.now(), ghlId).run();
+        // The Owner Email is in GHL now; record it here too so the owner check (ownerCheck) sees the new owner at once,
+        // even when the refresh above couldn't reach GHL.
+        await DB.prepare("UPDATE businesses SET owner_email=?1 WHERE ghl_id=?2").bind(NRM(email), ghlId).run();
       } catch (e) {
         console.log("post-approve claimed_at set failed: " + e.message);
       }
@@ -6845,7 +6962,15 @@ const PAGESEO = o => {
   };
 };
 
-const PAGE = (d, o) => (o = PAGESEO(o), `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">\n<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${E(o.title)}</title>\n<meta name="description" content="${E(o.desc || "")}">\n<link rel="canonical" href="${E(o.can || S.dom)}">\n\n<link rel="icon" type="image/png" href="/icon-192.png">\n<link rel="apple-touch-icon" href="/icon-192.png">\n\n<meta name="apple-mobile-web-app-capable" content="yes">\n<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">\n<meta name="apple-mobile-web-app-title" content="${E(APPSHORT())}">\n<link rel="preconnect" href="https://assets.cdn.filesafe.space">\n\n<link rel="manifest" href="/manifest.json">\n<meta name="theme-color" content="${T.navy}">\n<meta property="og:title" content="${E(o.title)}"><meta property="og:type" content="website">\n${o.desc ? `<meta property="og:description" content="${E(o.desc)}">` : ""}\n${o.can ? `<meta property="og:url" content="${E(o.can)}">` : ""}\n${o.img ? `<meta property="og:image" content="${E(o.img)}"><meta name="twitter:card" content="summary_large_image">` : ""}\n<style>${CSS}${S.freeOnly ? `a[href^="/pricing"],a[href^="/advertise"],a[href^="/featured"],a[href*="/manage/upgrade"],a[href*="/manage/advertise"]{display:none!important}` : ""}</style>\n${o.ld ? (Array.isArray(o.ld) ? o.ld.map(x => `<script type="application/ld+json">${SJ(x)}<\/script>`).join("") : `<script type="application/ld+json">${SJ(o.ld)}<\/script>`) : ""}\n${S.gaIds && S.gaIds.length ? `<script async src="https://www.googletagmanager.com/gtag/js?id=${E(S.gaIds[0])}"><\/script>\n<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());${S.gaIds.map(id => `gtag('config','${E(id)}');`).join("")}<\/script>` : ""}\n<script>\ndocument.addEventListener("click",function(e){var t=e.target.closest("[data-track]");if(!t)return;\nvar b=new Blob([JSON.stringify({id:t.getAttribute("data-biz"),kind:t.getAttribute("data-track")})],{type:"application/json"});\ntry{navigator.sendBeacon("/api/track",b)}catch(x){}\nif(window.gtag)try{gtag("event",t.getAttribute("data-track"),{business:t.getAttribute("data-biz")})}catch(x){}},true);\n(function(){\ntry{\nvar p=new URLSearchParams(location.search);\nif(document.cookie.indexOf("gl_attr=")>-1&&!p.get("utm_source")&&!p.get("utm_medium"))return;\nvar src=p.get("utm_source")||"",med=p.get("utm_medium")||"",cam=p.get("utm_campaign")||"";\nif(!src&&document.referrer){\n  try{var rh=new URL(document.referrer).hostname;\n    if(rh&&rh.indexOf(location.hostname)===-1){src=rh;med=/^(mail|webmail|outlook)[.]|mail[.](google|yahoo|aol)[.]|outlook[.](live|office|office365)[.]com/i.test(rh)?"email":/google|bing|yahoo|duckduckgo|ecosia|brave|yandex|baidu|chatgpt|openai|perplexity|gemini|copilot|claude[.]ai/i.test(rh)?"organic":"referral"}\n  }catch(e){}}\nif(!src){src="direct";med="none"}\nvar val=JSON.stringify({source:src,medium:med,campaign:cam,landing:location.pathname,ref:document.referrer||""});\ndocument.cookie="gl_attr="+encodeURIComponent(val)+";path=/;max-age="+(90*86400)+";SameSite=Lax"\n}catch(e){}\n})();<\/script></head><body>\n<a class="skip" href="#main">Skip to main content</a>\n${BRAGBAR()}\n${HEADER(d)}<main id="main">${o.body}</main>${FOOTER(d)}\n\n<div id="installBanner" class="install-banner" hidden>\n<img src="/icon-192.png" alt="" class="install-banner-icon">\n<div class="install-banner-text"><b>${E(APPNAME())}</b><span>Add to your Home Screen for quick access</span></div>\n<button type="button" id="installBtn" class="btn btn-p btn-sm">Add</button>\n<button type="button" id="installDismiss" class="install-banner-close" aria-label="Dismiss">&times;</button>\n</div>\n<div id="iosInstallTip" class="ios-install-tip" hidden>\n<p>Tap <b>Share</b> ${ICO.share || "⬆️"} at the bottom of your screen, then <b>"Add to Home Screen."</b></p>\n<button type="button" id="iosTipClose" class="btn btn-o btn-sm btn-w">Got it</button>\n</div>\n<script>if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}\n(function(){\nvar KEY="gl_install_dismissed_at";\nvar standalone=(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)||window.navigator.standalone===true;\nvar isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;\nvar deferredPrompt=null;\nvar banner=document.getElementById("installBanner");\nvar iosTip=document.getElementById("iosInstallTip");\nvar visits=0;try{visits=parseInt(localStorage.getItem("gl_visits")||"0",10)||0;if(!sessionStorage.getItem("gl_visit_counted")){sessionStorage.setItem("gl_visit_counted","1");visits++;localStorage.setItem("gl_visits",String(visits))}}catch(e){}\nvar recentlyDismissed=function(){if(visits<2)return true;var d=localStorage.getItem(KEY);return d&&(Date.now()-parseInt(d,10))<14*24*60*60*1000};\n\nfunction tryInstall(){\n  if(deferredPrompt){\n    deferredPrompt.prompt();\n    deferredPrompt.userChoice.finally(function(){deferredPrompt=null;if(banner)banner.hidden=true});\n  }else if(isIOS&&iosTip){iosTip.hidden=false}\n}\n\nif(!standalone){\n  window.addEventListener("beforeinstallprompt",function(e){\n    e.preventDefault();deferredPrompt=e;\n    if(banner&&!recentlyDismissed())banner.hidden=false});\n  if(isIOS&&banner&&!recentlyDismissed())setTimeout(function(){banner.hidden=false},1200);\n}\n\nvar installBtn=document.getElementById("installBtn");\nif(installBtn)installBtn.addEventListener("click",tryInstall);\nvar installDismiss=document.getElementById("installDismiss");\nif(installDismiss)installDismiss.addEventListener("click",function(){\n  banner.hidden=true;localStorage.setItem(KEY,String(Date.now()))});\nvar iosTipClose=document.getElementById("iosTipClose");\nif(iosTipClose)iosTipClose.addEventListener("click",function(){\n  iosTip.hidden=true;if(banner)banner.hidden=true;localStorage.setItem(KEY,String(Date.now()))});\ndocument.querySelectorAll(".footer-install-cta").forEach(function(btn){\n  btn.addEventListener("click",tryInstall)});\n})();<\/script>\n\n<nav id="appTabBar" class="app-tabbar" hidden aria-label="App navigation">\n<a href="/" data-match="^/$" aria-label="Home">${ICO.home}</a>\n<a href="/categories" data-match="^/categories" aria-label="Categories">${ICO.grid}</a>\n<a href="/search" data-match="^/search" aria-label="Search">${ICO.search}</a>\n<a href="/${AREA.paths}" data-match="^/${AREA.paths}" aria-label="${E(AREA.many)}">${ICO.pin}</a>\n<a href="/account" data-match="^/(account|manage|login)" aria-label="Profile">${ICO.user}</a>\n</nav>\n<script>(function(){\nvar bar=document.getElementById("appTabBar");\nif(!bar)return;\nvar path=location.pathname;\nfunction apply(standalone){\n  var footer=document.querySelector(".ft");\n  if(!standalone){\n    if(footer)footer.style.display="";\n    return;\n  }\n  bar.hidden=false;\n  document.body.classList.add("has-tabbar");\n  bar.querySelectorAll("a").forEach(function(a){\n    a.classList.toggle("on",new RegExp(a.getAttribute("data-match")).test(path))});\n  if(!/^\\/$|^\\/(account|manage|login)/.test(path)){\n    if(footer)footer.style.display="none"\n  } else if(footer){\n    footer.style.display=""\n  }\n}\nfunction isStandalone(){return (window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)||window.navigator.standalone===true}\napply(isStandalone());\nsetTimeout(function(){apply(isStandalone())},400);\ndocument.addEventListener("visibilitychange",function(){if(!document.hidden)apply(isStandalone())});\nif(window.matchMedia)try{window.matchMedia("(display-mode: standalone)").addEventListener("change",function(e){apply(e.matches)})}catch(e){}\n})();<\/script>\n</body></html>`);
+// Meta Pixel (Eric, 2 Nov: Facebook ads for owners to claim their listing). Only when the city sets CITY_META_PIXEL.
+// PageView everywhere; Lead when someone sends a claim, add-a-business or sign-up form; CompleteRegistration when an
+// owner finishes the email + phone check (/account?claimed=1 or ?verified=1).
+const PIXEL = () => S.metaPixel ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
+fbq('init','${S.metaPixel}');fbq('track','PageView');
+try{var q=new URLSearchParams(location.search);if(q.get("claimed")==="1"||q.get("verified")==="1")fbq('track','CompleteRegistration')}catch(e){}
+document.addEventListener("submit",function(e){var a=(e.target&&e.target.getAttribute("action"))||"";if(/^\\/api\\/(claim|lead|signup)/.test(a))try{fbq('track','Lead')}catch(x){}},true);<\/script><noscript><img height="1" width="1" style="display:none" alt="" src="https://www.facebook.com/tr?id=${S.metaPixel}&ev=PageView&noscript=1"></noscript>` : "";
+
+const PAGE = (d, o) => (o = PAGESEO(o), `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">\n<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${E(o.title)}</title>\n<meta name="description" content="${E(o.desc || "")}">\n<link rel="canonical" href="${E(o.can || S.dom)}">\n\n<link rel="icon" type="image/png" href="/icon-192.png">\n<link rel="apple-touch-icon" href="/icon-192.png">\n\n<meta name="apple-mobile-web-app-capable" content="yes">\n<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">\n<meta name="apple-mobile-web-app-title" content="${E(APPSHORT())}">\n<link rel="preconnect" href="https://assets.cdn.filesafe.space">\n\n<link rel="manifest" href="/manifest.json">\n<meta name="theme-color" content="${T.navy}">\n<meta property="og:title" content="${E(o.title)}"><meta property="og:type" content="website">\n${o.desc ? `<meta property="og:description" content="${E(o.desc)}">` : ""}\n${o.can ? `<meta property="og:url" content="${E(o.can)}">` : ""}\n${o.img ? `<meta property="og:image" content="${E(o.img)}"><meta name="twitter:card" content="summary_large_image">` : ""}\n<style>${CSS}${S.freeOnly ? `a[href^="/pricing"],a[href^="/advertise"],a[href^="/featured"],a[href*="/manage/upgrade"],a[href*="/manage/advertise"]{display:none!important}` : ""}</style>\n${o.ld ? (Array.isArray(o.ld) ? o.ld.map(x => `<script type="application/ld+json">${SJ(x)}<\/script>`).join("") : `<script type="application/ld+json">${SJ(o.ld)}<\/script>`) : ""}\n${S.gaIds && S.gaIds.length ? `<script async src="https://www.googletagmanager.com/gtag/js?id=${E(S.gaIds[0])}"><\/script>\n<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());${S.gaIds.map(id => `gtag('config','${E(id)}');`).join("")}<\/script>` : ""}\n${PIXEL()}\n<script>\ndocument.addEventListener("click",function(e){var t=e.target.closest("[data-track]");if(!t)return;\nvar b=new Blob([JSON.stringify({id:t.getAttribute("data-biz"),kind:t.getAttribute("data-track")})],{type:"application/json"});\ntry{navigator.sendBeacon("/api/track",b)}catch(x){}\nif(window.gtag)try{gtag("event",t.getAttribute("data-track"),{business:t.getAttribute("data-biz")})}catch(x){}},true);\n(function(){\ntry{\nvar p=new URLSearchParams(location.search);\nif(document.cookie.indexOf("gl_attr=")>-1&&!p.get("utm_source")&&!p.get("utm_medium")&&!p.get("fbclid"))return;\nvar src=p.get("utm_source")||"",med=p.get("utm_medium")||"",cam=p.get("utm_campaign")||"";\nif(!src&&p.get("fbclid")){src="facebook";med="paid"}\nif(!src&&document.referrer){\n  try{var rh=new URL(document.referrer).hostname;\n    if(rh&&rh.indexOf(location.hostname)===-1){src=rh;med=/^(mail|webmail|outlook)[.]|mail[.](google|yahoo|aol)[.]|outlook[.](live|office|office365)[.]com/i.test(rh)?"email":/google|bing|yahoo|duckduckgo|ecosia|brave|yandex|baidu|chatgpt|openai|perplexity|gemini|copilot|claude[.]ai/i.test(rh)?"organic":"referral"}\n  }catch(e){}}\nif(!src){src="direct";med="none"}\nvar val=JSON.stringify({source:src,medium:med,campaign:cam,landing:location.pathname,ref:document.referrer||""});\ndocument.cookie="gl_attr="+encodeURIComponent(val)+";path=/;max-age="+(90*86400)+";SameSite=Lax"\n}catch(e){}\n})();<\/script></head><body>\n<a class="skip" href="#main">Skip to main content</a>\n${BRAGBAR()}\n${HEADER(d)}<main id="main">${o.body}</main>${FOOTER(d)}\n\n<div id="installBanner" class="install-banner" hidden>\n<img src="/icon-192.png" alt="" class="install-banner-icon">\n<div class="install-banner-text"><b>${E(APPNAME())}</b><span>Add to your Home Screen for quick access</span></div>\n<button type="button" id="installBtn" class="btn btn-p btn-sm">Add</button>\n<button type="button" id="installDismiss" class="install-banner-close" aria-label="Dismiss">&times;</button>\n</div>\n<div id="iosInstallTip" class="ios-install-tip" hidden>\n<p>Tap <b>Share</b> ${ICO.share || "⬆️"} at the bottom of your screen, then <b>"Add to Home Screen."</b></p>\n<button type="button" id="iosTipClose" class="btn btn-o btn-sm btn-w">Got it</button>\n</div>\n<script>if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}\n(function(){\nvar KEY="gl_install_dismissed_at";\nvar standalone=(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)||window.navigator.standalone===true;\nvar isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;\nvar deferredPrompt=null;\nvar banner=document.getElementById("installBanner");\nvar iosTip=document.getElementById("iosInstallTip");\nvar visits=0;try{visits=parseInt(localStorage.getItem("gl_visits")||"0",10)||0;if(!sessionStorage.getItem("gl_visit_counted")){sessionStorage.setItem("gl_visit_counted","1");visits++;localStorage.setItem("gl_visits",String(visits))}}catch(e){}\nvar recentlyDismissed=function(){if(visits<2)return true;var d=localStorage.getItem(KEY);return d&&(Date.now()-parseInt(d,10))<14*24*60*60*1000};\n\nfunction tryInstall(){\n  if(deferredPrompt){\n    deferredPrompt.prompt();\n    deferredPrompt.userChoice.finally(function(){deferredPrompt=null;if(banner)banner.hidden=true});\n  }else if(isIOS&&iosTip){iosTip.hidden=false}\n}\n\nif(!standalone){\n  window.addEventListener("beforeinstallprompt",function(e){\n    e.preventDefault();deferredPrompt=e;\n    if(banner&&!recentlyDismissed())banner.hidden=false});\n  if(isIOS&&banner&&!recentlyDismissed())setTimeout(function(){banner.hidden=false},1200);\n}\n\nvar installBtn=document.getElementById("installBtn");\nif(installBtn)installBtn.addEventListener("click",tryInstall);\nvar installDismiss=document.getElementById("installDismiss");\nif(installDismiss)installDismiss.addEventListener("click",function(){\n  banner.hidden=true;localStorage.setItem(KEY,String(Date.now()))});\nvar iosTipClose=document.getElementById("iosTipClose");\nif(iosTipClose)iosTipClose.addEventListener("click",function(){\n  iosTip.hidden=true;if(banner)banner.hidden=true;localStorage.setItem(KEY,String(Date.now()))});\ndocument.querySelectorAll(".footer-install-cta").forEach(function(btn){\n  btn.addEventListener("click",tryInstall)});\n})();<\/script>\n\n<nav id="appTabBar" class="app-tabbar" hidden aria-label="App navigation">\n<a href="/" data-match="^/$" aria-label="Home">${ICO.home}</a>\n<a href="/categories" data-match="^/categories" aria-label="Categories">${ICO.grid}</a>\n<a href="/search" data-match="^/search" aria-label="Search">${ICO.search}</a>\n<a href="/${AREA.paths}" data-match="^/${AREA.paths}" aria-label="${E(AREA.many)}">${ICO.pin}</a>\n<a href="/account" data-match="^/(account|manage|login)" aria-label="Profile">${ICO.user}</a>\n</nav>\n<script>(function(){\nvar bar=document.getElementById("appTabBar");\nif(!bar)return;\nvar path=location.pathname;\nfunction apply(standalone){\n  var footer=document.querySelector(".ft");\n  if(!standalone){\n    if(footer)footer.style.display="";\n    return;\n  }\n  bar.hidden=false;\n  document.body.classList.add("has-tabbar");\n  bar.querySelectorAll("a").forEach(function(a){\n    a.classList.toggle("on",new RegExp(a.getAttribute("data-match")).test(path))});\n  if(!/^\\/$|^\\/(account|manage|login)/.test(path)){\n    if(footer)footer.style.display="none"\n  } else if(footer){\n    footer.style.display=""\n  }\n}\nfunction isStandalone(){return (window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)||window.navigator.standalone===true}\napply(isStandalone());\nsetTimeout(function(){apply(isStandalone())},400);\ndocument.addEventListener("visibilitychange",function(){if(!document.hidden)apply(isStandalone())});\nif(window.matchMedia)try{window.matchMedia("(display-mode: standalone)").addEventListener("change",function(e){apply(e.matches)})}catch(e){}\n})();<\/script>\n</body></html>`);
 
 function HOME(d, feat, hoodCounts, openNow, homeEvents, homePosts, heroTagRows, heroBigRows, hasAnyHours, homeNews, claimedUnpaid) {
   openNow = openNow || [];
@@ -7649,11 +7774,20 @@ const NOTICE = (d, title, msg, cta, href) => PAGE(d, {
   body: `<div class="wrap" style="padding:80px 24px;text-align:center;max-width:620px">\n<h1>${E(title)}</h1><p style="color:${T.body};margin:14px 0 24px">${E(msg)}</p>\n<a class="btn btn-p btn-lg" href="${href || "/"}">${E(cta || "Back to the directory")}</a></div>`
 });
 
-const CONFIRMOWNER = (d, email, rows, v, err) => PAGE(d, {
+const OWNERSTEPS = n => `<div style="display:flex;gap:8px;margin:2px 0 18px">${[ "Email", "Phone", "Done" ].map((t, i) => `<div style="flex:1;text-align:center;font-size:12px;font-weight:700;padding:8px 0;border-radius:10px;${i + 1 < n ? `background:${T.tealSoft};color:${T.teal}` : i + 1 === n ? `background:${T.navy};color:#fff` : `background:${T.sand};color:${T.muted}`}">${i + 1} · ${t}${i + 1 < n ? " ✓" : ""}</div>`).join("")}</div>`;
+
+const OWNERCODE = (d, st, names, err, msg) => PAGE(d, {
+  title: `Verify your phone | ${S.brand}`,
+  desc: "Enter the code we texted to the owner's phone.",
+  can: S.dom + "/manage/confirm",
+  body: `<div class="wrap" style="max-width:460px;padding:60px 24px">\n<div class="kicker">Confirm you're the owner</div>\n<h1 style="margin:10px 0 14px">Verify your phone</h1>\n${OWNERSTEPS(2)}\n<p style="color:${T.muted};margin-bottom:18px">We texted a 6-digit code to the owner's phone <b style="color:${T.navy}">${E(MASKPHONE(st.phone))}</b>. Only the owner can finish ${names.length ? `claiming <b style="color:${T.navy}">${names.map(E).join("</b>, <b style=\"color:" + T.navy + "\">")}</b>` : "this step"}.</p>\n${err ? `<div class="note note-err">${E(err)}</div>` : ""}${msg ? `<div class="note note-ok">${E(msg)}</div>` : ""}\n<form method="POST" action="/manage/confirm"><input type="hidden" name="step" value="code">\n<div class="fld2"><label for="oc">6-digit code</label><input id="oc" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="••••••" style="font-size:22px;letter-spacing:.4em;text-align:center"></div>\n<button class="btn btn-p btn-w">Verify and manage my listing</button></form>\n<form method="POST" action="/manage/confirm" style="display:flex;gap:14px;justify-content:center;margin-top:12px;font-size:12.5px"><input type="hidden" name="step" value="resend"><button style="background:none;border:0;padding:0;color:${T.teal};text-decoration:underline;cursor:pointer;font-size:12.5px">Text it again</button><a href="/manage/confirm?change=1" style="color:${T.teal}">Change number</a></form>\n<p style="font-size:12px;color:${T.muted};text-align:center;margin:14px 0 0">It has to be a mobile that can get texts. No code after a few minutes? Check the number, or reply to our email and we'll help.</p></div>`
+});
+
+const CONFIRMOWNER = (d, email, rows, v, err, held = true) => PAGE(d, {
   title: `Confirm your details | ${S.brand}`,
   desc: "Confirm the owner's details to finish claiming your listing.",
   can: S.dom + "/manage/confirm",
-  body: `<div class="wrap" style="max-width:460px;padding:60px 24px">\n<div class="kicker">One last step</div>\n<h1 style="margin:10px 0 14px">Confirm you're the owner</h1>\n${PRIVBOX("We only use the owner's name, email and phone to verify that you own this business. They are not published on your listing.")}\n<p style="color:${T.muted};margin-bottom:20px">To finish claiming <b style="color:${T.navy}">${rows.map(r => E(r.name)).join("</b>, <b style=\"color:" + T.navy + "\">")}</b>, confirm your email and tell us who to contact about the listing.</p>\n${err ? `<div class="note note-err">${E(err)}</div>` : ""}\n<form method="POST" action="/manage/confirm">\n<div class="fld2"><label for="ce">Your email <span style="color:${T.muted};font-weight:400">(type it again)</span></label><input id="ce" name="email" type="email" required autocomplete="off" placeholder="${E(email)}" value="${E(v.email || "")}"></div>\n<div class="fld2"><label for="cn">Owner's full name</label><input id="cn" name="name" required autocomplete="name" placeholder="First and last name" value="${E(v.name || "")}"></div>\n<div class="fld2"><label for="cp">Owner's phone</label><input id="cp" name="phone" type="tel" required autocomplete="tel" placeholder="(555) 555-0100" value="${E(v.phone || "")}"></div>\n<div class="fld2"><label for="cy">Year established</label><input id="cy" name="yrs" type="number" required min="1800" max="${(new Date).getFullYear()}" placeholder="e.g. 2015" value="${E(v.yrs || "")}"></div>\n<button class="btn btn-p btn-w">Confirm and manage my listing</button>\n<p style="font-size:12px;color:${T.muted};text-align:center;margin:10px 0 0">We only use these to reach you about your listing. They're never shown on the site.</p>\n</form></div>`
+  body: `<div class="wrap" style="max-width:460px;padding:60px 24px">\n<div class="kicker">One last step</div>\n<h1 style="margin:10px 0 14px">Confirm you're the owner</h1>\n${OWNERSTEPS(2)}\n${PRIVBOX("We only use the owner's name, email and phone to verify that you own this business. They are not published on your listing.")}\n<p style="color:${T.muted};margin-bottom:20px">${held ? "To finish claiming" : "We now check every owner's email and phone. To keep managing"} <b style="color:${T.navy}">${rows.map(r => E(r.name)).join("</b>, <b style=\"color:" + T.navy + "\">")}</b>, confirm your email and tell us who to contact about the listing.</p>\n${err ? `<div class="note note-err">${E(err)}</div>` : ""}\n<form method="POST" action="/manage/confirm">\n<div class="fld2"><label for="ce">Your email <span style="color:${T.muted};font-weight:400">(type it again)</span></label><input id="ce" name="email" type="email" required autocomplete="off" placeholder="${E(email)}" value="${E(v.email || "")}"></div>\n<div class="fld2"><label for="cn">Owner's full name</label><input id="cn" name="name" required autocomplete="name" placeholder="First and last name" value="${E(v.name || "")}"></div>\n<div class="fld2"><label for="cp">Owner's mobile phone</label><input id="cp" name="phone" type="tel" required autocomplete="tel" placeholder="(555) 555-0100" value="${E(v.phone || "")}"><span style="font-size:11.5px;color:${T.muted};margin-top:4px">We'll text a code to this number to check it's yours.</span></div>\n<div class="fld2"><label for="cy">Year established</label><input id="cy" name="yrs" type="number" required min="1800" max="${(new Date).getFullYear()}" placeholder="e.g. 2015" value="${E(v.yrs || "")}"></div>\n<button class="btn btn-p btn-w">Text me a code</button>\n<p style="font-size:12px;color:${T.muted};text-align:center;margin:10px 0 0">We only use these to reach you about your listing. They're never shown on the site.</p>\n</form></div>`
 });
 
 const PASSWORDPAGE = (d, email, msg, err) => PAGE(d, {
@@ -8906,7 +9040,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.85-shared";
+const BUILD = "v16.86-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -12021,47 +12155,94 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       if (!s) return Response.redirect(AUTH.SITE_URL + "/login", 302);
       return Response.redirect(AUTH.SITE_URL + "/account", 302);
     }
+    // Owners who still owe the email + phone check can't use the account or Manage pages until it's done.
+    if ((u.pathname === "/account" || u.pathname === "/manage" || u.pathname.startsWith("/manage/")) && u.pathname !== "/manage/confirm") {
+      const s = await session(env, req);
+      if (s && (await ownerCheck(DB, s.email)).rows.length) return Response.redirect(AUTH.SITE_URL + "/manage/confirm", 302);
+    }
     if (u.pathname === "/manage/confirm") {
       const s = await session(env, req);
       if (!s) return Response.redirect(AUTH.SITE_URL + "/login?next=" + encodeURIComponent("/manage/confirm"), 302);
       const d = await SHELL(DB, env);
-      const rows = await pendingOwner(DB, s.email);
+      const chk = await ownerCheck(DB, s.email), rows = chk.rows;
       if (!rows.length) return Response.redirect(AUTH.SITE_URL + "/account", 302);
+      const KV = KVOF(env), ovKey = "ov:" + NRM(s.email);
+      let st = null;
+      try {
+        st = KV ? JSON.parse(await KV.get(ovKey) || "null") : null;
+      } catch {}
+      const save = async () => KV && KV.put(ovKey, JSON.stringify(st), { expirationTtl: OV_TTL });
+      const names = rows.map(r => r.name);
       if (req.method === "POST") {
-        const f = await req.formData();
+        const f = await req.formData(), step = String(f.get("step") || "");
+        if (step === "resend") {
+          if (!st) return Response.redirect(AUTH.SITE_URL + "/manage/confirm", 302);
+          const why = await ownerCodeSend(env, st);
+          await save();
+          return R2(OWNERCODE(d, st, names, why === "wait" ? "Wait a minute before asking for another code." : why === "too many" ? "That's the most codes we can send for now. Try again in 30 minutes." : why ? "We couldn't text that number. Check it's a mobile that gets texts, or change it." : "", why ? "" : "We've texted you a new code."));
+        }
+        if (step === "code") {
+          if (!st || !st.code) return Response.redirect(AUTH.SITE_URL + "/manage/confirm", 302);
+          const code = String(f.get("code") || "").replace(/\D/g, "");
+          if (Date.now() - st.codeAt > OV_CODE_MS) return R2(OWNERCODE(d, st, names, "That code has expired. Tap \"Text it again\" for a new one.", ""));
+          if (code !== st.code) {
+            st.tries = (st.tries || 0) + 1;
+            if (st.tries >= OV_MAX_TRIES) st.code = "";
+            await save();
+            return R2(OWNERCODE(d, st, names, st.code ? "That code isn't right. Check the text and try again." : "Too many wrong codes. Tap \"Text it again\" for a new one.", ""));
+          }
+          // Phone proven: Owner Name / Owner Phone / Year established on every listing (custom fields only — GHL drops
+          // custom fields sent alongside native ones), then the listing counts as claimed (activateOwner).
+          try {
+            const m = await fields(env);
+            const cf = [ [ fieldId(m, "owner name"), st.name ], [ fieldId(m, "owner phone", "owner phone number"), st.phone ], [ fieldId(m, "year established", "years in business", "established", "year founded"), st.yrs ] ].filter(([ fid, v ]) => fid && v).map(([ id, value ]) => ({ id: id, value: value }));
+            if (cf.length) for (const r of rows) await fetch(`${API}/contacts/${r.ghl_id}`, {
+              method: "PUT",
+              headers: {
+                ...H(env),
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                customFields: cf
+              })
+            });
+          } catch (e) {
+            console.log("confirm owner details failed: " + e.message);
+          }
+          await DB.prepare("INSERT OR REPLACE INTO owner_verified(email,phone,verified_at) VALUES(?1,?2,?3)").bind(NRM(s.email), st.phone, Date.now()).run().catch(() => {});
+          for (const r of rows) {
+            await ghlAddTag(env, r.ghl_id, [ "owner-phone-verified", "owner-email-verified" ]).catch(() => {});
+            await fbTrack(env, r.ghl_id, req, "Owner verified");
+            if (!chk.pending) await ghlNote(env, r.ghl_id, `The owner (${NRM(s.email)}) verified their Owner Phone ${st.phone} with a texted code on ${new Date().toISOString().slice(0, 10)} (email already verified by their sign-in code). Owner Name: ${st.name}.`).catch(() => {});
+          }
+          if (chk.pending) await activateOwner(env, s.email, { name: st.name, phone: st.phone + " (verified by a texted code)" });
+          if (KV) await KV.delete(ovKey).catch(() => {});
+          return Response.redirect(AUTH.SITE_URL + (chk.pending ? "/account?claimed=1" : "/account?verified=1"), 302);
+        }
         const em = NRM(String(f.get("email") || ""));
         const name = String(f.get("name") || "").trim().replace(/\s+/g, " ").slice(0, 80);
         const phone = String(f.get("phone") || "").trim().slice(0, 30);
         const yrs = YEAR(f.get("yrs"));
-        const err = em !== NRM(s.email) ? `Type the same email you signed in with (${s.email}).` : name.split(" ").length < 2 ? "Enter your first and last name." : !NPHONE(phone) ? "Enter a phone number we can reach you on." : !yrs ? "Enter the year the business was established (e.g. 2015)." : "";
-        if (err) return R2(CONFIRMOWNER(d, s.email, rows, { email: em, name: name, phone: phone, yrs: String(f.get("yrs") || "") }, err));
-        try {
-          const m = await fields(env);
-          const cf = [ [ fieldId(m, "owner name"), name ], [ fieldId(m, "owner phone", "owner phone number"), phone ], [ fieldId(m, "year established", "years in business", "established", "year founded"), yrs ] ].filter(([ fid ]) => fid).map(([ id, value ]) => ({ id: id, value: value }));
-          // Custom fields only in this call (GHL drops custom fields sent alongside native ones); activateOwner sets Owner Email.
-          if (cf.length) for (const r of rows) await fetch(`${API}/contacts/${r.ghl_id}`, {
-            method: "PUT",
-            headers: {
-              ...H(env),
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              customFields: cf
-            })
-          });
-        } catch (e) {
-          console.log("confirm owner details failed: " + e.message);
-        }
-        await activateOwner(env, s.email, { name: name, phone: phone });
-        return Response.redirect(AUTH.SITE_URL + "/account?claimed=1", 302);
+        const ph = NPHONE(phone);
+        const err = em !== NRM(s.email) ? `Type the same email you signed in with (${s.email}).` : name.split(" ").length < 2 ? "Enter your first and last name." : !ph || ph.replace(/\D/g, "").length < 11 ? "Enter the owner's mobile number, with area code." : !yrs ? "Enter the year the business was established (e.g. 2015)." : "";
+        if (err) return R2(CONFIRMOWNER(d, s.email, rows, { email: em, name: name, phone: phone, yrs: String(f.get("yrs") || "") }, err, chk.pending));
+        const same = st && st.phone === ph;
+        st = { ...(same ? st : {}), cid: rows[0].ghl_id, phone: ph, name: name, yrs: yrs };
+        if (!same) st.sends = 0, st.sentAt = 0;
+        const why = await ownerCodeSend(env, st);
+        await save();
+        if (why && why !== "wait") return R2(CONFIRMOWNER(d, s.email, rows, { email: em, name: name, phone: phone, yrs: String(yrs) }, why === "too many" ? "That's the most codes we can send for now. Try again in 30 minutes." : "We couldn't text that number. Check it's a mobile that can get texts.", chk.pending));
+        return R2(OWNERCODE(d, st, names, "", ""));
       }
+      if (st && st.code && u.searchParams.get("change") !== "1") return R2(OWNERCODE(d, st, names, "", ""));
       let pre = { email: "", name: "", phone: "" };
       try {
         const m = await fields(env), c = await ghlGetContact(env, rows[0].ghl_id);
         const v = c ? cv(c, m) : {};
         pre = { email: "", name: P(v, "owner name") || "", phone: P(v, "owner phone", "owner phone number") || "", yrs: YEAR(P(v, "year established", "years in business", "established", "year founded")) || "" };
       } catch {}
-      return R2(CONFIRMOWNER(d, s.email, rows, pre, ""));
+      if (st) pre = { ...pre, name: st.name || pre.name, phone: st.phone || pre.phone, yrs: st.yrs || pre.yrs };
+      return R2(CONFIRMOWNER(d, s.email, rows, pre, "", chk.pending));
     }
     if (u.pathname === "/account") {
       const s = await session(env, req);
@@ -14913,6 +15094,7 @@ function applyCityConfig(env) {
   S.visits = Math.max(200, Math.min(200000, parseInt(env.CITY_VISITS, 10) || 4600));
   if (env.CITY_DOMAIN) S.dom = env.CITY_DOMAIN;
   if (env.CITY_GA_IDS) S.gaIds = env.CITY_GA_IDS.split(",").map(s => s.trim()).filter(Boolean);
+  S.metaPixel = String(env.CITY_META_PIXEL || "").replace(/\D/g, "").slice(0, 20);
   if (env.CITY_DOMAIN) AUTH.SITE_URL = env.CITY_DOMAIN;
   if (env.CITY_FROM_EMAIL) AUTH.FROM_EMAIL = env.CITY_FROM_EMAIL;
   if (env.CITY_FROM_NAME) AUTH.FROM_NAME = env.CITY_FROM_NAME;
