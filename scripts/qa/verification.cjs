@@ -393,7 +393,10 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const h42 = await F(BASE + "/manage/hub?id=QA8", { redirect: "manual", headers: { cookie: ownerCookie } });
   ok(g42.status === 302 && /manage\/confirm/.test(g42.headers.get("location") || "") && /Text me a code/.test(p42) && /Verify your phone/.test(d42) && /verified=1/.test(v42.headers.get("location") || "") && row42.phone === "+18135550142" && h42.status === 200, "T42 existing owner: Manage waits for the texted phone code, then opens", [ g42.status, v42.status, v42.headers.get("location"), row42.phone, h42.status ].join(" "));
   // T43 the city's Meta Pixel (CITY_META_PIXEL) loads on every page, with Lead on the claim/add/sign-up forms
-  const px43 = (await get("/")).html;
+  const px43r = await F(BASE + "/");
+  const csp43 = px43r.headers.get("content-security-policy") || "";
+  const px43 = await px43r.text();
+  ok(/script-src[^;]*https:\/\/connect\.facebook\.net/.test(csp43) && /connect-src[^;]*https:\/\/www\.facebook\.com/.test(csp43), "T43b security header lets the Meta Pixel script load and report", csp43.slice(0, 80));
   ok(/fbq\('init','123456789012345'\)/.test(px43) && /track','Lead'/.test(px43) && /fbclid/.test(px43), "T43 Meta Pixel from the city setting, Lead on form sends, fbclid counts as Facebook", px43.length);
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
