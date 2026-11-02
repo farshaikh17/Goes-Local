@@ -3196,49 +3196,53 @@ async function ownerCheck(DB, email) {
 
 const OV_TTL = 30 * 60, OV_CODE_MS = 15 * 60 * 1e3, OV_MAX_TRIES = 5, OV_MAX_SENDS = 4;
 
-// Texts the owner-check code to the Owner Phone through the business contact (toNumber), so it shows on the business's
-// Conversations tab and no new contact is made. GHL may only text a number the contact has, so a refused send adds the
-// number to the contact as an extra phone (native-fields-only call) and tries again.
-async function ownerSms(env, cid, phone, message) {
+// Texts the owner-check code to the Owner Phone. GHL only texts a contact's own main phone (toNumber must match it,
+// and sending additionalPhones on a PUT replaces the main phone — found live, 2 Nov), and a number can belong to only
+// one contact. So: the business contact when the owner's mobile is its phone; else the contact that already has the
+// number (often one GHL made when the owner phoned in); else a small contact for the owner's phone, tagged owner-phone
+// and named after the owner (the only new contact this makes — no other way to text a new number through GHL). Notes
+// on both link them, so sales see where the text is.
+async function ownerSms(env, cid, phone, message, who) {
   if (!AUTH.CHANNELS.sms) return false;
-  const post = () => fetch(`${API}/conversations/messages`, {
-    method: "POST",
-    headers: {
-      ...H(env),
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      type: "SMS",
-      contactId: cid,
-      toNumber: phone,
-      message: message
-    })
-  });
+  const last10 = x => String(x || "").replace(/\D/g, "").slice(-10);
   try {
-    let r = await post();
-    if (!r.ok) {
-      const why = (await r.text()).slice(0, 200);
-      const c = await ghlGetContact(env, cid);
-      const have = c ? [ c.phone, ...(c.additionalPhones || []).map(x => x && x.phone || x) ].map(x => String(x || "").replace(/\D/g, "").slice(-10)) : [];
-      if (c && !have.includes(phone.replace(/\D/g, "").slice(-10))) {
-        const u = await fetch(`${API}/contacts/${cid}`, {
-          method: "PUT",
-          headers: {
-            ...H(env),
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify(c.phone ? {
-            additionalPhones: [ ...(c.additionalPhones || []).map(x => ({ phone: x && x.phone || x })), { phone: phone } ]
-          } : {
-            phone: phone
-          })
-        });
-        if (u.ok) r = await post();
-        else console.log("owner sms: couldn't add the number to " + cid + " (" + u.status + " " + (await u.text()).slice(0, 160) + ")");
+    const c = await ghlGetContact(env, cid);
+    if (c && last10(c.phone) === last10(phone)) return await sendSMS(env, cid, message);
+    let own = await ghlFindContactByPhone(env, phone), made = false;
+    if (!own) {
+      const nm = String(who && who.name || "").trim().split(/\s+/);
+      const r = await fetch(`${API}/contacts/`, {
+        method: "POST",
+        headers: {
+          ...H(env),
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          locationId: env.GHL_LOCATION_ID,
+          phone: phone,
+          firstName: nm[0] || "Owner",
+          lastName: nm.slice(1).join(" "),
+          companyName: c && c.companyName || "",
+          tags: [ "owner-phone" ],
+          source: "Goes Local owner phone check"
+        })
+      });
+      if (!r.ok) {
+        console.log("owner sms: couldn't make a contact for the phone (" + r.status + " " + (await r.text()).slice(0, 160) + ")");
+        return false;
       }
-      if (!r.ok) console.log("owner sms " + r.status + " (first try: " + why + ")" + (r.bodyUsed ? "" : ": " + (await r.text()).slice(0, 200)));
+      own = (await r.json()).contact;
+      made = true;
     }
-    return r.ok;
+    if (!own || !own.id) return false;
+    const ok = await sendSMS(env, own.id, message);
+    if (ok && own.id !== cid && who && who.first) {
+      const loc = env.GHL_LOCATION_ID, bn = c && (c.companyName || [ c.firstName, c.lastName ].filter(Boolean).join(" ")) || cid;
+      await ghlNote(env, cid, `Owner phone check: the code was texted to ${phone}. GHL lets only one contact own a number, so the text is in the Conversations of ${made ? "a new contact made for the owner's phone" : "the contact that already has this number"}: ${GHL_APP_URL}/v2/location/${loc}/contacts/detail/${own.id}`).catch(() => {});
+      await ghlNote(env, own.id, `This is the owner's phone for "${bn}" (owner phone check on the website${who.name ? `, owner ${who.name}` : ""}): ${GHL_APP_URL}/v2/location/${loc}/contacts/detail/${cid}`).catch(() => {});
+      await ghlAddTag(env, own.id, [ "owner-phone" ]).catch(() => {});
+    }
+    return ok;
   } catch (e) {
     console.log("owner sms fail: " + e.message);
     return false;
@@ -3264,7 +3268,7 @@ async function ownerCodeSend(env, st) {
     console.log("OV TEST CODE " + st.code);
     return "";
   }
-  return await ownerSms(env, st.cid, st.phone, `${S.brand}: ${st.code} is your owner verification code. It expires in 15 minutes. Reply STOP to opt out.`) ? "" : "failed";
+  return await ownerSms(env, st.cid, st.phone, `${S.brand}: ${st.code} is your owner verification code. It expires in 15 minutes. Reply STOP to opt out.`, { name: st.name, first: st.sends === 1 }) ? "" : "failed";
 }
 
 async function activateOwner(env, email, who) {
@@ -9040,7 +9044,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.86-shared";
+const BUILD = "v16.87-shared";
 
 const APP_COOKIE = "gl_app";
 
