@@ -3317,6 +3317,24 @@ let SHELL_DIRTY = false;
 
 let OL_STATS = { t: 0, listings: 0, owners: 0 };
 
+// Facebook ad pages (/join = the "List your business" page, /owners = find & claim). Eric, 2 Nov: "the exact same flow
+// as List your Business … same form but with different pages … tagged differently as FB leads". Opening one of these
+// pages marks the visitor as from Facebook (first-touch cookie, overriding an earlier one), so the same forms and steps
+// that follow tag the GHL contact facebook-ad / fb-<step> and set Lead Source "Website – … (Facebook ads)" — even
+// when the ad link carries no utm_ parameters. utm_campaign, if given, is kept as the campaign.
+const FBPAGE = (res, u, page) => {
+  const a = {
+    source: "facebook",
+    medium: "paid",
+    campaign: String(u.searchParams.get("utm_campaign") || page).slice(0, 100),
+    landing: u.pathname,
+    ref: ""
+  };
+  res.headers.set("cache-control", "no-store");
+  res.headers.append("set-cookie", `gl_attr=${encodeURIComponent(JSON.stringify(a))}; Path=/; Max-Age=${90 * 86400}; SameSite=Lax; Secure`);
+  return res;
+};
+
 async function shell(DB) {
   const now = Date.now();
   if (C.d && now - C.t < S.ttl * 1e3 && !SHELL_DIRTY) return C.d;
@@ -7607,8 +7625,8 @@ const ADD = (d, x) => {
   return PAGE(d, {
   title: seo.title,
   desc: seo.desc,
-  can: S.dom + "/add",
-  ld: SEOLD("add"),
+  can: S.dom + (x.fb ? "/join" : "/add"),
+  ld: x.fb ? undefined : SEOLD("add"),
   body: `<section class="lpx-hero"${x.img ? ` style="background-image:url('${E(x.img)}')"` : ""}><div class="lpx-in">
 <div class="lpx-top"><span class="lpx-k"><i></i> 🏆 ${E(BRAG())}</span>
 <h1>${AREA.byCity ? `Customers across ${E(S.city)} are looking.` : `${E(S.city)} customers are looking.`} <em>Make sure they find you.</em></h1></div>
@@ -7646,7 +7664,7 @@ ${PRIVBOX("Your name, email and phone are only used to verify ownership of this 
 </div>
 </form>
 <div class="lpx-fine"><span>🔒 Never sold or shared</span><span>✓ No card needed</span></div>
-<div class="lpx-alt">Already listed? <a href="/claim">Find &amp; claim your business →</a></div></div>
+<div class="lpx-alt">Already listed? <a href="${x.fb ? "/owners" : "/claim"}">Find &amp; claim your business →</a></div></div>
 </div></section>
 <div class="wrap">
 <div class="lpx-stats"><div><b>#1</b><span>${E(BRAGDIR())} in ${E(S.city)}</span></div><div><b>${NUM(d.count || 0)}</b><span>businesses listed</span></div><div><b>${hoodN}</b><span>${E(S.city)} ${E(AREA.los)}</span></div><div><b>30 sec</b><span>to go live</span></div></div>
@@ -9128,7 +9146,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.89-shared";
+const BUILD = "v16.90-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -14017,7 +14035,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         const r = await DB.prepare("SELECT COUNT(*) n, SUM(CASE WHEN owner_email<>'' THEN 1 ELSE 0 END) o FROM businesses").first();
         OL_STATS.t = Date.now(), OL_STATS.listings = Math.floor((r.n || 0) / 100) * 100, OL_STATS.owners = r.o || 0;
       } catch {}
-      return R2(OWNERSLP(d, q, hits, OL_STATS));
+      return FBPAGE(R2(OWNERSLP(d, q, hits, OL_STATS)), u, "owners");
     }
     if (p[0] === "claim" && p.length === 1) {
       const q = (u.searchParams.get("q") || "").trim().slice(0, 60);
@@ -14402,7 +14420,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       const rows = DB ? ((await DB.prepare("SELECT * FROM businesses WHERE claimed=1 ORDER BY plus DESC, premium DESC, rat DESC, rev DESC LIMIT ?1 OFFSET ?2").bind(perPage, (page - 1) * perPage).all()).results || []).map(ROWOF) : [];
       return R(CLAIMEDPAGE(d, rows, page, totalPages));
     }
-    if (p[0] === "add") {
+    if (p[0] === "add" || p[0] === "join" && p.length === 1) {
       // City photo (busiest neighbourhood) + a few claimed businesses with their own photo, for the landing page.
       let img = "", proof = [], topHood = "";
       if (DB) try {
@@ -14413,6 +14431,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         proof = ((await DB.prepare("SELECT * FROM businesses WHERE claimed=1 AND logo LIKE 'http%' ORDER BY rev DESC LIMIT 12").all()).results || []).map(ROWOF).filter(b => bizImg(b) !== DEFAULT_LISTING_IMG).slice(0, 5);
       } catch {}
       await loadCatMap(DB);
+      if (p[0] === "join") return FBPAGE(R(ADD(d, { img: img, proof: proof, hoodName: topHood, fb: true }) .replace("</body>", `<script>try{if(window.fbq)fbq('track','ViewContent',{content_name:'List your business (Facebook)'})}catch(e){}<\/script></body>`)), u, "join");
       return R(ADD(d, { img: img, proof: proof, hoodName: topHood }));
     }
     if (p[0] === "blog" && !p[1]) {
@@ -15226,7 +15245,7 @@ function applyCityConfig(env) {
 
 const _base = _export;
 
-const EDGE_SKIP = /^\/(admin|debug|manage|account|login|signup|verify|code|auth|forgot|reset|logout|claim|add|api|webhooks|sw\.js)(\/|$)/;
+const EDGE_SKIP = /^\/(admin|debug|manage|account|login|signup|verify|code|auth|forgot|reset|logout|claim|add|join|owners|api|webhooks|sw\.js)(\/|$)/;
 
 const EDGE_KEEP = /^(batch|biz|cat|claim|edit|email|err|hood|id|link|main|next|ok|page|page_key|paid|plan|q|rating|ref|resent|rqerr|rqok|sent|sort|sub|t|tab|warn)$/;
 
@@ -15340,7 +15359,7 @@ export default {
     h.set("X-Content-Type-Options", "nosniff");
     h.set("Referrer-Policy", "strict-origin-when-cross-origin");
     h.set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=(), usb=(), magnetometer=(), gyroscope=()");
-    if (/^\/(admin|debug)(\/|$)/.test(u.pathname)) h.set("X-Robots-Tag", "noindex, nofollow"); else if (u.pathname === "/search" || u.pathname === "/owners" || [ "hood", "rating", "claim", "sort", "sub" ].some(k => u.searchParams.has(k))) h.set("X-Robots-Tag", "noindex, follow");
+    if (/^\/(admin|debug)(\/|$)/.test(u.pathname)) h.set("X-Robots-Tag", "noindex, nofollow"); else if (u.pathname === "/search" || u.pathname === "/owners" || u.pathname === "/join" || [ "hood", "rating", "claim", "sort", "sub" ].some(k => u.searchParams.has(k))) h.set("X-Robots-Tag", "noindex, follow");
     return new Response(out.body, { status: out.status, statusText: out.statusText, headers: h });
   }
 };
