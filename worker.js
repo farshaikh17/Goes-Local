@@ -3068,7 +3068,8 @@ async function applyListingVerification(env, DB, cid) {
         const sent = await sendTplEmail(env, DB, inviteTo, "claim_invite", {
           business: biz.name,
           brand: S.brand,
-          email: biz.owner_email || biz.email
+          email: biz.owner_email || biz.email,
+          _after: await otherBranches(DB, biz.ghl_id, inviteTo)
         }, href, undefined, biz.ghl_id);
         // The note says what really happened (Eric, 27 Oct: Tango Nail & Spa's notes said "Invite sent" while GHL refused
         // every email because a bounce had switched on email Do Not Disturb).
@@ -3153,6 +3154,20 @@ async function pendingOwner(DB, email) {
     return (await DB.prepare("SELECT o.ghl_id, b.name FROM owner_pending o JOIN businesses b ON b.ghl_id=o.ghl_id WHERE o.email=?1 AND o.activated_at IS NULL").bind(NRM(email)).all()).results || [];
   } catch {
     return [];
+  }
+}
+
+// Other listings this owner email will manage from the same sign-in (Owner Email on file, or held by a sales Listing
+// Verified), as a line for the invite emails (Eric, 2 Nov: one owner, several branches).
+async function otherBranches(DB, ghlId, email) {
+  const em = NRM(email);
+  if (!DB || !em) return "";
+  try {
+    const rows = (await DB.prepare("SELECT name,addr FROM businesses WHERE ghl_id<>?2 AND (owner_email=?1 OR ghl_id IN (SELECT ghl_id FROM owner_pending WHERE email=?1 AND activated_at IS NULL)) ORDER BY name LIMIT 20").bind(em, ghlId).all()).results || [];
+    if (!rows.length) return "";
+    return `<div style="background:#E4F1F1;border-radius:12px;padding:12px 14px;font-size:13px;color:#2F4A55;margin-top:12px"><b style="color:#12263F">This login also manages your other ${rows.length === 1 ? "location" : rows.length + " locations"}:</b><br>${rows.map(r => `${E(r.name)}${r.addr ? ` <span style="color:#7A8CA0">· ${E(r.addr)}</span>` : ""}`).join("<br>")}</div>`;
+  } catch {
+    return "";
   }
 }
 
@@ -4108,7 +4123,18 @@ async function sendEmail(env, to, subject, html, text, contactId, opts) {
         console.log("ghl email via " + via + " failed (" + r.status + " " + why + ") — retrying via the recipient's own contact");
         cid = own;
         r = await post(own);
-        if (r.ok) await ghlNote(env, via, `Email "${subject}" sent to ${to}. GHL keeps it on that address's own contact (it already belongs to another contact), so look there for the conversation.`);
+        // Name and link the contact GHL filed it under, often another branch of the same business that has this address
+        // as its main email (Eric, 30 Oct: Total Life Counseling's Southwest invite sat on the East branch's conversation).
+        if (r.ok) try {
+          const oc = await ghlGetContact(env, own), loc = env.GHL_LOCATION_ID;
+          const on = (oc && (oc.companyName || [ oc.firstName, oc.lastName ].filter(Boolean).join(" "))) || own;
+          const vc = await ghlGetContact(env, via);
+          const vn = (vc && (vc.companyName || [ vc.firstName, vc.lastName ].filter(Boolean).join(" "))) || via;
+          await ghlNote(env, via, `Email "${subject}" sent to ${to}. GHL lets only one contact own an email address, and ${to} belongs to "${on}", so the email is in that contact's Conversations: ${GHL_APP_URL}/v2/location/${loc}/contacts/detail/${own}`);
+          if (vc) await ghlNote(env, own, `Email "${subject}" in this conversation was sent for another contact, "${vn}", which uses the same address: ${GHL_APP_URL}/v2/location/${loc}/contacts/detail/${via}`);
+        } catch (e) {
+          console.log("ghl email: cross-contact notes failed: " + e.message);
+        }
       } else {
         console.log("ghl email " + r.status + ": " + why);
         return false;
@@ -4574,7 +4600,8 @@ async function autoHourly(env, DB) {
       if (await sendTplEmail(env, DB, r.email, "claim_invite_reminder", {
         business: r.name || "your business",
         brand: S.brand,
-        email: r.email
+        email: r.email,
+        _after: await otherBranches(DB, r.ghl_id, r.email)
       }, CLAIMLINK({ owner_email: r.email }), undefined, r.ghl_id)) out.reminded = (out.reminded || 0) + 1;
     }
   } catch (e) {
@@ -6013,7 +6040,8 @@ async function sendTplEmail(env, DB, to, key, vars, href, code, contactId) {
   vars = { ...SITEVARS(), ...vars || {} };
   const subject = fillTpl(t.subject, vars);
   const title = fillTpl(t.title, vars);
-  const body = fillTpl(t.body, vars);
+  // vars._after is extra HTML put after the (possibly staff-edited) template body, e.g. the owner's other branches.
+  const body = fillTpl(t.body, vars) + (vars._after || "");
   let html;
   if (t.isCode) {
     html = MAILCODE(title, body, code);
@@ -8878,7 +8906,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.84-shared";
+const BUILD = "v16.85-shared";
 
 const APP_COOKIE = "gl_app";
 
