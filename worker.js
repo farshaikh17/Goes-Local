@@ -23,7 +23,9 @@ const S = {
   // visitors to get counted inside Miami's Analytics account.
   gaIds: [],
   // Meta (Facebook) Pixel ID, from each city's own CITY_META_PIXEL setting in Cloudflare (Settings -> Variables).
-  metaPixel: ""
+  metaPixel: "",
+  // Meta domain verification code (Business Settings → Brand safety → Domains → meta-tag option), CITY_META_DOMAIN_VERIFY.
+  metaDomain: ""
 };
 
 // What the site calls the places it groups listings into, and their page addresses.
@@ -3312,6 +3314,8 @@ let C = {
 };
 
 let SHELL_DIRTY = false;
+
+let OL_STATS = { t: 0, listings: 0, owners: 0 };
 
 async function shell(DB) {
   const now = Date.now();
@@ -6969,10 +6973,10 @@ const PAGESEO = o => {
 // Meta Pixel (Eric, 2 Nov: Facebook ads for owners to claim their listing). Only when the city sets CITY_META_PIXEL.
 // PageView everywhere; Lead when someone sends a claim, add-a-business or sign-up form; CompleteRegistration when an
 // owner finishes the email + phone check (/account?claimed=1 or ?verified=1).
-const PIXEL = () => S.metaPixel ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
+const PIXEL = () => (S.metaDomain ? `<meta name="facebook-domain-verification" content="${E(S.metaDomain)}">` : "") + (S.metaPixel ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
 fbq('init','${S.metaPixel}');fbq('track','PageView');
 try{var q=new URLSearchParams(location.search);if(q.get("claimed")==="1"||q.get("verified")==="1")fbq('track','CompleteRegistration')}catch(e){}
-document.addEventListener("submit",function(e){var a=(e.target&&e.target.getAttribute("action"))||"";if(/^\\/api\\/(claim|lead|signup)/.test(a))try{fbq('track','Lead')}catch(x){}},true);<\/script><noscript><img height="1" width="1" style="display:none" alt="" src="https://www.facebook.com/tr?id=${S.metaPixel}&ev=PageView&noscript=1"></noscript>` : "";
+document.addEventListener("submit",function(e){var a=(e.target&&e.target.getAttribute("action"))||"";if(/^\\/api\\/(claim|lead|signup)/.test(a))try{fbq('track','Lead')}catch(x){}},true);<\/script><noscript><img height="1" width="1" style="display:none" alt="" src="https://www.facebook.com/tr?id=${S.metaPixel}&ev=PageView&noscript=1"></noscript>` : "");
 
 const PAGE = (d, o) => (o = PAGESEO(o), `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">\n<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${E(o.title)}</title>\n<meta name="description" content="${E(o.desc || "")}">\n<link rel="canonical" href="${E(o.can || S.dom)}">\n\n<link rel="icon" type="image/png" href="/icon-192.png">\n<link rel="apple-touch-icon" href="/icon-192.png">\n\n<meta name="apple-mobile-web-app-capable" content="yes">\n<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">\n<meta name="apple-mobile-web-app-title" content="${E(APPSHORT())}">\n<link rel="preconnect" href="https://assets.cdn.filesafe.space">\n\n<link rel="manifest" href="/manifest.json">\n<meta name="theme-color" content="${T.navy}">\n<meta property="og:title" content="${E(o.title)}"><meta property="og:type" content="website">\n${o.desc ? `<meta property="og:description" content="${E(o.desc)}">` : ""}\n${o.can ? `<meta property="og:url" content="${E(o.can)}">` : ""}\n${o.img ? `<meta property="og:image" content="${E(o.img)}"><meta name="twitter:card" content="summary_large_image">` : ""}\n<style>${CSS}${S.freeOnly ? `a[href^="/pricing"],a[href^="/advertise"],a[href^="/featured"],a[href*="/manage/upgrade"],a[href*="/manage/advertise"]{display:none!important}` : ""}</style>\n${o.ld ? (Array.isArray(o.ld) ? o.ld.map(x => `<script type="application/ld+json">${SJ(x)}<\/script>`).join("") : `<script type="application/ld+json">${SJ(o.ld)}<\/script>`) : ""}\n${S.gaIds && S.gaIds.length ? `<script async src="https://www.googletagmanager.com/gtag/js?id=${E(S.gaIds[0])}"><\/script>\n<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());${S.gaIds.map(id => `gtag('config','${E(id)}');`).join("")}<\/script>` : ""}\n${PIXEL()}\n<script>\ndocument.addEventListener("click",function(e){var t=e.target.closest("[data-track]");if(!t)return;\nvar b=new Blob([JSON.stringify({id:t.getAttribute("data-biz"),kind:t.getAttribute("data-track")})],{type:"application/json"});\ntry{navigator.sendBeacon("/api/track",b)}catch(x){}\nif(window.gtag)try{gtag("event",t.getAttribute("data-track"),{business:t.getAttribute("data-biz")})}catch(x){}},true);\n(function(){\ntry{\nvar p=new URLSearchParams(location.search);\nif(document.cookie.indexOf("gl_attr=")>-1&&!p.get("utm_source")&&!p.get("utm_medium")&&!p.get("fbclid"))return;\nvar src=p.get("utm_source")||"",med=p.get("utm_medium")||"",cam=p.get("utm_campaign")||"";\nif(!src&&p.get("fbclid")){src="facebook";med="paid"}\nif(!src&&document.referrer){\n  try{var rh=new URL(document.referrer).hostname;\n    if(rh&&rh.indexOf(location.hostname)===-1){src=rh;med=/^(mail|webmail|outlook)[.]|mail[.](google|yahoo|aol)[.]|outlook[.](live|office|office365)[.]com/i.test(rh)?"email":/google|bing|yahoo|duckduckgo|ecosia|brave|yandex|baidu|chatgpt|openai|perplexity|gemini|copilot|claude[.]ai/i.test(rh)?"organic":"referral"}\n  }catch(e){}}\nif(!src){src="direct";med="none"}\nvar val=JSON.stringify({source:src,medium:med,campaign:cam,landing:location.pathname,ref:document.referrer||""});\ndocument.cookie="gl_attr="+encodeURIComponent(val)+";path=/;max-age="+(90*86400)+";SameSite=Lax"\n}catch(e){}\n})();<\/script></head><body>\n<a class="skip" href="#main">Skip to main content</a>\n${BRAGBAR()}\n${HEADER(d)}<main id="main">${o.body}</main>${FOOTER(d)}\n\n<div id="installBanner" class="install-banner" hidden>\n<img src="/icon-192.png" alt="" class="install-banner-icon">\n<div class="install-banner-text"><b>${E(APPNAME())}</b><span>Add to your Home Screen for quick access</span></div>\n<button type="button" id="installBtn" class="btn btn-p btn-sm">Add</button>\n<button type="button" id="installDismiss" class="install-banner-close" aria-label="Dismiss">&times;</button>\n</div>\n<div id="iosInstallTip" class="ios-install-tip" hidden>\n<p>Tap <b>Share</b> ${ICO.share || "⬆️"} at the bottom of your screen, then <b>"Add to Home Screen."</b></p>\n<button type="button" id="iosTipClose" class="btn btn-o btn-sm btn-w">Got it</button>\n</div>\n<script>if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}\n(function(){\nvar KEY="gl_install_dismissed_at";\nvar standalone=(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)||window.navigator.standalone===true;\nvar isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;\nvar deferredPrompt=null;\nvar banner=document.getElementById("installBanner");\nvar iosTip=document.getElementById("iosInstallTip");\nvar visits=0;try{visits=parseInt(localStorage.getItem("gl_visits")||"0",10)||0;if(!sessionStorage.getItem("gl_visit_counted")){sessionStorage.setItem("gl_visit_counted","1");visits++;localStorage.setItem("gl_visits",String(visits))}}catch(e){}\nvar recentlyDismissed=function(){if(visits<2)return true;var d=localStorage.getItem(KEY);return d&&(Date.now()-parseInt(d,10))<14*24*60*60*1000};\n\nfunction tryInstall(){\n  if(deferredPrompt){\n    deferredPrompt.prompt();\n    deferredPrompt.userChoice.finally(function(){deferredPrompt=null;if(banner)banner.hidden=true});\n  }else if(isIOS&&iosTip){iosTip.hidden=false}\n}\n\nif(!standalone){\n  window.addEventListener("beforeinstallprompt",function(e){\n    e.preventDefault();deferredPrompt=e;\n    if(banner&&!recentlyDismissed())banner.hidden=false});\n  if(isIOS&&banner&&!recentlyDismissed())setTimeout(function(){banner.hidden=false},1200);\n}\n\nvar installBtn=document.getElementById("installBtn");\nif(installBtn)installBtn.addEventListener("click",tryInstall);\nvar installDismiss=document.getElementById("installDismiss");\nif(installDismiss)installDismiss.addEventListener("click",function(){\n  banner.hidden=true;localStorage.setItem(KEY,String(Date.now()))});\nvar iosTipClose=document.getElementById("iosTipClose");\nif(iosTipClose)iosTipClose.addEventListener("click",function(){\n  iosTip.hidden=true;if(banner)banner.hidden=true;localStorage.setItem(KEY,String(Date.now()))});\ndocument.querySelectorAll(".footer-install-cta").forEach(function(btn){\n  btn.addEventListener("click",tryInstall)});\n})();<\/script>\n\n<nav id="appTabBar" class="app-tabbar" hidden aria-label="App navigation">\n<a href="/" data-match="^/$" aria-label="Home">${ICO.home}</a>\n<a href="/categories" data-match="^/categories" aria-label="Categories">${ICO.grid}</a>\n<a href="/search" data-match="^/search" aria-label="Search">${ICO.search}</a>\n<a href="/${AREA.paths}" data-match="^/${AREA.paths}" aria-label="${E(AREA.many)}">${ICO.pin}</a>\n<a href="/account" data-match="^/(account|manage|login)" aria-label="Profile">${ICO.user}</a>\n</nav>\n<script>(function(){\nvar bar=document.getElementById("appTabBar");\nif(!bar)return;\nvar path=location.pathname;\nfunction apply(standalone){\n  var footer=document.querySelector(".ft");\n  if(!standalone){\n    if(footer)footer.style.display="";\n    return;\n  }\n  bar.hidden=false;\n  document.body.classList.add("has-tabbar");\n  bar.querySelectorAll("a").forEach(function(a){\n    a.classList.toggle("on",new RegExp(a.getAttribute("data-match")).test(path))});\n  if(!/^\\/$|^\\/(account|manage|login)/.test(path)){\n    if(footer)footer.style.display="none"\n  } else if(footer){\n    footer.style.display=""\n  }\n}\nfunction isStandalone(){return (window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)||window.navigator.standalone===true}\napply(isStandalone());\nsetTimeout(function(){apply(isStandalone())},400);\ndocument.addEventListener("visibilitychange",function(){if(!document.hidden)apply(isStandalone())});\nif(window.matchMedia)try{window.matchMedia("(display-mode: standalone)").addEventListener("change",function(e){apply(e.matches)})}catch(e){}\n})();<\/script>\n</body></html>`);
 
@@ -7680,6 +7684,86 @@ if(st&&card&&"IntersectionObserver" in window)new IntersectionObserver(function(
 })();<\/script>`
   });
 };
+
+// Owner landing page for paid ads (Eric, 2 Nov: "the URL which will be specific for facebook"; his designer is making
+// the final design, this is the working version). Ad link: /owners?utm_source=facebook&utm_medium=paid&utm_campaign=…
+// Search, claim and verification are the normal claim flow, so tracking is the same: the gl_attr cookie (first touch)
+// tags the GHL contact facebook-ad / fb-<step>, and the Pixel sends ViewContent here, Lead on the claim form and
+// CompleteRegistration when the owner finishes the email + phone check. Not indexed (X-Robots-Tag).
+const OWNERSLP = (d, q, hits, st) => PAGE(d, {
+  title: `Claim your free listing | ${S.brand}`,
+  desc: `Your business is already listed on ${S.brand}. Claim it free in 2 minutes to add photos, fix your details and get customer messages.`,
+  can: S.dom + "/owners",
+  img: HERO_IMG,
+  body: `<style>
+.ol-hero{position:relative;color:#fff;background:${T.navy} url('${E(HERO_IMG)}') center/cover}
+.ol-hero:before{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(18,38,63,.93),rgba(18,38,63,.85) 60%,rgba(18,38,63,.96))}
+.ol-in{position:relative;max-width:1080px;margin:0 auto;padding:44px 20px 38px}
+.ol-pill{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.22);border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:600}
+.ol-pill b{width:8px;height:8px;border-radius:50%;background:#4ADE80;box-shadow:0 0 0 4px rgba(74,222,128,.25)}
+.ol-h1{font-family:${T.serif};font-weight:700;font-size:36px;line-height:1.08;margin:16px 0 12px;color:#fff}.ol-h1 em{font-style:normal;color:#FFB59E}
+.ol-lead{font-size:16.5px;line-height:1.55;color:#D6DEE8;margin:0 0 20px;max-width:560px}
+.ol-proof{display:flex;gap:22px;flex-wrap:wrap;font-size:13px;color:#C9D3DF;margin-top:18px}.ol-proof b{display:block;color:#fff;font-size:16px}
+.ol-find{background:#fff;border-radius:18px;padding:18px;box-shadow:0 20px 50px rgba(0,0,0,.3);color:${T.ink}}
+.ol-find label{display:block;font-size:13.5px;font-weight:700;color:${T.navy};margin-bottom:8px}
+.ol-sb{display:flex;gap:8px}.ol-sb input{flex:1;min-width:0;border:2px solid ${T.coral};border-radius:12px;padding:13px 14px;font-size:16px}
+.ol-sb button{background:${T.coral};color:#fff;border:0;border-radius:12px;padding:0 18px;font-weight:800;font-size:15px;cursor:pointer}
+.ol-res{margin-top:12px;border:1px solid ${T.line};border-radius:12px;overflow:hidden}
+.ol-r{display:flex;align-items:center;gap:12px;padding:11px 12px;border-bottom:1px solid ${T.line};font-size:14px}.ol-r:last-child{border:0}
+.ol-r div{flex:1;min-width:0}.ol-r small{display:block;color:${T.muted};font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ol-r a{background:${T.coral};color:#fff;font-weight:700;font-size:13px;border-radius:999px;padding:8px 14px;white-space:nowrap;text-decoration:none}
+.ol-r .ol-done{background:${T.sand};color:${T.muted}}
+.ol-miss{text-align:center;font-size:13.5px;color:${T.body};margin-top:12px}.ol-miss a{color:${T.teal};font-weight:700}
+.ol-sec{max-width:1080px;margin:0 auto;padding:46px 20px}
+.ol-k{color:${T.coral};font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+.ol-h2{font-family:${T.serif};font-weight:700;font-size:28px;line-height:1.15;color:${T.navy};margin:8px 0 10px}
+.ol-sub{color:${T.body};font-size:15.5px;line-height:1.55;margin:0 0 22px;max-width:620px}
+.ol-steps{display:grid;gap:12px}.ol-st{display:flex;gap:14px;background:#fff;border:1px solid ${T.line};border-radius:16px;padding:16px}
+.ol-st .n{width:38px;height:38px;flex:none;border-radius:12px;background:${T.navy};color:#fff;font:700 17px ${T.serif};display:flex;align-items:center;justify-content:center}
+.ol-st h3{margin:2px 0 4px;color:${T.navy};font-size:15.5px}.ol-st p{margin:0;color:${T.body};font-size:13.5px;line-height:1.5}
+.ol-dark{background:${T.navy};color:#fff}.ol-dark .ol-h2{color:#fff}
+.ol-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.ol-ben{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:16px}
+.ol-ben h3{margin:8px 0 4px;font-size:14.5px;color:#fff}.ol-ben p{margin:0;color:#C9D3DF;font-size:13px;line-height:1.45}
+.ol-faq details{background:#fff;border:1px solid ${T.line};border-radius:14px;padding:14px 16px;margin-bottom:10px}
+.ol-faq summary{font-weight:700;color:${T.navy};font-size:15px;cursor:pointer}.ol-faq p{margin:10px 0 0;color:${T.body};font-size:14px;line-height:1.55}
+.ol-cta{background:linear-gradient(135deg,${T.coral},${T.coralDark});color:#fff;border-radius:22px;padding:28px 22px;text-align:center}
+.ol-cta .ol-h2{color:#fff;margin-top:0}.ol-cta a{display:inline-block;background:#fff;color:${T.coral};font-weight:800;border-radius:999px;padding:15px 26px;font-size:15.5px;text-decoration:none}
+@media(min-width:900px){.ol-in{display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center;padding:70px 40px 60px}.ol-h1{font-size:50px}.ol-sec{padding:64px 40px}.ol-h2{font-size:34px}.ol-steps{grid-template-columns:repeat(3,1fr)}.ol-grid{grid-template-columns:repeat(4,1fr)}.ol-two{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start}}
+</style>
+<section class="ol-hero"><div class="ol-in">
+<div><span class="ol-pill"><b></b>Your listing may already be live</span>
+<h1 class="ol-h1">${E(S.city)} customers are already <em>looking for you.</em> Make sure they choose you.</h1>
+<p class="ol-lead">Your free listing is on ${E(S.brand)}. Claim it in 2 minutes to add photos and hours, fix your details, and get customer messages straight to your inbox.</p>
+<div class="ol-proof">${st.listings ? `<div><b>${E(st.listings.toLocaleString("en-US"))}+</b>${E(S.city)} businesses listed</div>` : ""}${st.owners ? `<div><b>${E(st.owners.toLocaleString("en-US"))}</b>owners already claimed</div>` : ""}<div><b>$0</b>free, no card needed</div></div></div>
+<div class="ol-find" id="find"><form method="GET" action="/owners#find"><label for="olq">Find your business to claim it</label>
+<div class="ol-sb"><input id="olq" name="q" value="${E(q || "")}" required minlength="2" placeholder="Type your business name" autocomplete="organization"><button>Search</button></div></form>
+${q ? hits.length ? `<div class="ol-res">${hits.map(b => `<div class="ol-r"><div><b>${E(b.name)}</b><small>${E([ b.hood, b.cat ].filter(Boolean).join(" · ") || CLAMP(b.addr || "", 50))}</small></div>${b.claimed || b.owner_email ? `<a class="ol-done" href="/login">Already claimed · Log in</a>` : `<a href="/claim/start?id=${encodeURIComponent(b.id)}">Claim free</a>`}</div>`).join("")}</div>` : `<div class="ol-res"><div class="ol-r"><div><b>No match for “${E(q)}”.</b><small>Try a shorter name, or add your business free.</small></div></div></div>` : ""}
+<div class="ol-miss">Not listed yet? <a href="/add">Add your business free →</a></div></div>
+</div></section>
+<section class="ol-sec"><div class="ol-k">How it works</div><h2 class="ol-h2">Claimed in 3 quick steps</h2><p class="ol-sub">We check it's really you, so nobody else can take over your listing.</p>
+<div class="ol-steps">
+<div class="ol-st"><span class="n">1</span><div><h3>Find your business</h3><p>Search above and tap Claim free. Not listed? Add it in a minute.</p></div></div>
+<div class="ol-st"><span class="n">2</span><div><h3>Verify it's you</h3><p>Enter the code we send to your email, then the code we text to your mobile. Only the owner can do this.</p></div></div>
+<div class="ol-st"><span class="n">3</span><div><h3>Make it yours</h3><p>Add photos, hours and services. Customers can message you straight away.</p></div></div>
+</div></section>
+<section class="ol-dark"><div class="ol-sec"><div class="ol-k">What you get — free</div><h2 class="ol-h2">Everything you need to win local customers</h2>
+<div class="ol-grid">
+<div class="ol-ben"><div style="font-size:22px">📸</div><h3>Photos &amp; logo</h3><p>Show your work and your storefront.</p></div>
+<div class="ol-ben"><div style="font-size:22px">💬</div><h3>Customer messages</h3><p>Enquiries go straight to your email.</p></div>
+<div class="ol-ben"><div style="font-size:22px">⭐</div><h3>Your Google reviews</h3><p>Shown on your page automatically.</p></div>
+<div class="ol-ben"><div style="font-size:22px">📈</div><h3>See your views</h3><p>Know how many locals look you up.</p></div>
+</div></div></section>
+<section class="ol-sec ol-two"><div><div class="ol-k">Questions</div><h2 class="ol-h2">Good to know</h2>${PRIVBOX("We only use your email and phone to check you're the owner. They're never shown on the directory.")}</div>
+<div class="ol-faq">
+<details open><summary>Is it really free?</summary><p>Yes. Claiming and managing your listing is free. No credit card.</p></details>
+<details><summary>Why do you text my phone?</summary><p>To make sure only the real owner can claim the business. It takes 30 seconds.</p></details>
+<details><summary>I'm a manager, not the owner</summary><p>Ask the owner to claim it, then they can add you from the Team tab with your own login.</p></details>
+<details><summary>My business has more than one location</summary><p>Claim each location with the same email. One login manages them all.</p></details>
+</div></section>
+<section class="ol-sec" style="padding-top:0"><div class="ol-cta"><h2 class="ol-h2">Claim your free listing today</h2><p style="margin:0 0 18px;color:#FFE4DA">Takes 2 minutes.</p><a href="#find" onclick="setTimeout(function(){var i=document.getElementById('olq');if(i)i.focus()},300)">Find my business →</a></div></section>
+<script>try{if(window.fbq)fbq('track','ViewContent',{content_name:'Owner landing page'})}catch(e){}<\/script>`
+});
 
 const CLAIMFIND = (d, q, hits) => PAGE(d, {
   title: `Claim your listing | ${S.brand}`,
@@ -9044,7 +9128,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.88-shared";
+const BUILD = "v16.89-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -13921,6 +14005,20 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       if (noted) return R2(NOTICE(d, "Thanks — we've got your message", `Your enquiry is saved and our local team will pass it on to ${l.business || "the business"}. For anything urgent, call them using the number on their listing.`, "Back to the directory", "/"));
       return R2(NOTICE(d, "Something went wrong", "We couldn't send your message just now. Please try again in a minute, or call the business using the number on their listing.", "Go back", "/"), 500);
     }
+    if (p[0] === "owners" && p.length === 1) {
+      const q = (u.searchParams.get("q") || "").trim().slice(0, 60);
+      let hits = [];
+      if (q.length >= 2) try {
+        hits = ((await DB.prepare("SELECT * FROM businesses WHERE name LIKE ?1 ORDER BY (owner_email<>'') ASC, rat DESC LIMIT 8").bind("%" + q.replace(/[%_]/g, "") + "%").all()).results || []).map(ROWOF);
+      } catch (e) {
+        console.log("owners search failed: " + e.message);
+      }
+      if (!OL_STATS.t || Date.now() - OL_STATS.t > 6e5) try {
+        const r = await DB.prepare("SELECT COUNT(*) n, SUM(CASE WHEN owner_email<>'' THEN 1 ELSE 0 END) o FROM businesses").first();
+        OL_STATS.t = Date.now(), OL_STATS.listings = Math.floor((r.n || 0) / 100) * 100, OL_STATS.owners = r.o || 0;
+      } catch {}
+      return R2(OWNERSLP(d, q, hits, OL_STATS));
+    }
     if (p[0] === "claim" && p.length === 1) {
       const q = (u.searchParams.get("q") || "").trim().slice(0, 60);
       let hits = [];
@@ -15099,6 +15197,7 @@ function applyCityConfig(env) {
   if (env.CITY_DOMAIN) S.dom = env.CITY_DOMAIN;
   if (env.CITY_GA_IDS) S.gaIds = env.CITY_GA_IDS.split(",").map(s => s.trim()).filter(Boolean);
   S.metaPixel = String(env.CITY_META_PIXEL || "").replace(/\D/g, "").slice(0, 20);
+  S.metaDomain = String(env.CITY_META_DOMAIN_VERIFY || "").replace(/[^a-z0-9]/gi, "").slice(0, 64);
   if (env.CITY_DOMAIN) AUTH.SITE_URL = env.CITY_DOMAIN;
   if (env.CITY_FROM_EMAIL) AUTH.FROM_EMAIL = env.CITY_FROM_EMAIL;
   if (env.CITY_FROM_NAME) AUTH.FROM_NAME = env.CITY_FROM_NAME;
@@ -15241,7 +15340,7 @@ export default {
     h.set("X-Content-Type-Options", "nosniff");
     h.set("Referrer-Policy", "strict-origin-when-cross-origin");
     h.set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=(), usb=(), magnetometer=(), gyroscope=()");
-    if (/^\/(admin|debug)(\/|$)/.test(u.pathname)) h.set("X-Robots-Tag", "noindex, nofollow"); else if (u.pathname === "/search" || [ "hood", "rating", "claim", "sort", "sub" ].some(k => u.searchParams.has(k))) h.set("X-Robots-Tag", "noindex, follow");
+    if (/^\/(admin|debug)(\/|$)/.test(u.pathname)) h.set("X-Robots-Tag", "noindex, nofollow"); else if (u.pathname === "/search" || u.pathname === "/owners" || [ "hood", "rating", "claim", "sort", "sub" ].some(k => u.searchParams.has(k))) h.set("X-Robots-Tag", "noindex, follow");
     return new Response(out.body, { status: out.status, statusText: out.statusText, headers: h });
   }
 };

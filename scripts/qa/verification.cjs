@@ -398,6 +398,10 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const px43 = await px43r.text();
   ok(/script-src[^;]*https:\/\/connect\.facebook\.net/.test(csp43) && /connect-src[^;]*https:\/\/www\.facebook\.com/.test(csp43), "T43b security header lets the Meta Pixel script load and report", csp43.slice(0, 80));
   ok(/fbq\('init','123456789012345'\)/.test(px43) && /track','Lead'/.test(px43) && /fbclid/.test(px43), "T43 Meta Pixel from the city setting, Lead on form sends, fbclid counts as Facebook", px43.length);
+  // T44 the Facebook owner landing page: search finds a listing with a Claim button into the normal flow; not indexed
+  const o44 = await F(BASE + "/owners?q=QA%20Three&utm_source=facebook&utm_medium=paid&utm_campaign=t44");
+  const o44h = await o44.text();
+  ok(o44.status === 200 && /Find your business to claim it/.test(o44h) && /QA Three HVAC/.test(o44h) && /\/claim\/start\?id=QA3|Already claimed/.test(o44h) && /noindex/.test(o44.headers.get("x-robots-tag") || "") && /track','ViewContent'/.test(o44h), "T44 /owners landing page: search + Claim into the normal flow, ViewContent, not indexed", o44.status + " " + o44.headers.get("x-robots-tag"));
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
   const t41pg = await get("/claim/start?id=QA3");
