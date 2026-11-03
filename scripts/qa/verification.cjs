@@ -422,6 +422,23 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const h47 = await (await F(BASE + "/")).text();
   ok(/err=/.test(bad47.headers.get("location") || "") && /data-vsrc="https:\/\/example\.com\/s47\.mp4"/.test(h47) && /QA Slide 47/.test(h47), "T47 homepage big slide video (image kept; bad link refused)", bad47.headers.get("location"));
   sql(`DELETE FROM hero_slides WHERE title IN ('QA Slide 47','QA Tag 47')`);
+  // T49 List your business: someone other than the owner adds it → held for the owner (owner_pending with the claims
+  // row), not on the site; the owner filling it in goes straight to sign-up; the held listing shows on the owner check
+  const n49 = await post("/api/lead", { type: "add", business: "QA Held Biz", email: "held@qaheld.com", phone: "8135550149", zip: "33602", address: "1 Held St", yrs: "2010", is_owner: "no", submit_name: "Sam Social", submit_role: "Marketing / social media", submit_email: "sam@agency49.com", owner_name: "Olga Owner", owner_email: "olga@qaheld.com", owner_phone: "8135550150" }, "10.4.9.1");
+  const h49 = sql(`SELECT o.ghl_id, o.email, o.claim_id, c.business FROM owner_pending o JOIN claims c ON c.id=o.claim_id WHERE o.email='olga@qaheld.com'`)[0] || {};
+  const live49 = sql(`SELECT COUNT(*) n FROM businesses WHERE name='QA Held Biz'`)[0].n;
+  const y49 = await post("/api/lead", { type: "add", business: "QA Self Biz", email: "self@qaself.com", phone: "8135550151", zip: "33602", address: "2 Self St", yrs: "2011", is_owner: "yes", owner_name: "Sel Fowner", owner_email: "self@qaself.com", owner_phone: "8135550152" }, "10.4.9.2");
+  const lg49 = await (await F(BASE + "/login?tab=signup&email=self%40qaself.com&added=1")).text();
+  sql(`INSERT INTO owner_pending(ghl_id,email,tier,created_at,claim_id) VALUES('row:t49','owner@qaeight.com','verified',1,${h49.claim_id || 0})`);
+  const c49 = await (await F(BASE + "/manage/confirm", { headers: { cookie: ownerCookie } })).text();
+  sql(`DELETE FROM owner_pending WHERE ghl_id='row:t49'`);
+  ok(/the owner just needs to verify/i.test(txt(n49.html)) && /o•••@qaheld\.com/.test(txt(n49.html)) && h49.business === "QA Held Biz" && live49 === 0 && y49.status === 302 && /tab=signup&email=self%40qaself\.com&added=1/.test(y49.loc) && /Your listing is saved/.test(lg49) && /QA Held Biz/.test(c49), "T49 new listings wait for the owner's email + phone check (others submit → owner emailed; owner submits → sign-up)", [ n49.status, JSON.stringify(h49), live49, y49.status, y49.loc ].join(" | "));
+  // T50 first-login onboarding asks an owner whose listing is in "Other" what they do; saving checks the category
+  sql(`UPDATE businesses SET cs='other', cat='Other' WHERE ghl_id='QA8'`);
+  const a50 = await (await F(BASE + "/account", { headers: { cookie: ownerCookie } })).text();
+  const bad50 = await F(BASE + "/manage/category", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ id: "QA8", category: "Not a real category" }) });
+  sql(`UPDATE businesses SET cs='home-services', cat='Home Services' WHERE ghl_id='QA8'`);
+  ok(/What does QA Eight Bakery do\?/.test(a50) && /action="\/manage\/category"/.test(a50) && !/cat=1/.test(bad50.headers.get("location") || ""), "T50 onboarding asks the category for a listing in Other; an unknown category is refused", bad50.headers.get("location"));
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
   const t41pg = await get("/claim/start?id=QA3");
