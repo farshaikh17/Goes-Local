@@ -12,3 +12,4 @@ Rules:
 - Talk to Eric in short plain English, no jargon. Mock up UI changes before building.
 - Before commit: `npm run precheck` (node --check, duplicate-route scan, one VERSION line, no leaked city values), bump `const BUILD` (the version).
 - Deploy only committed code: `scripts/deploy.sh` (needs CLOUDFLARE_API_TOKEN and ADMIN_LOGIN_KEY). Add a `changelog/v15.xx.md` per release and tag it `v15.xx-shared`.
+- Live QA must never send a text message to a real phone (Eric, 3 Nov: +1 307-240-9810 is his boss's — never use it). Test phone codes locally only (BV_TEST_ECHO); on the live site skip the texting step.
