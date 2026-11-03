@@ -9273,7 +9273,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.93-shared";
+const BUILD = "v16.94-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -15469,6 +15469,9 @@ async function edgeKey(u, env) {
   for (const [n, v] of ps) k.searchParams.append(n, v);
   k.searchParams.set("__b", BUILD);
   k.searchParams.set("__g", await cacheGen(env));
+  // Settings printed into every page's <head> (Meta Pixel, Meta domain code, Google Analytics) are part of the key, so
+  // changing them in Cloudflare serves fresh pages at once (Eric, 3 Nov: saved pages kept the old Pixel).
+  k.searchParams.set("__c", [ S.metaPixel, S.metaDomain, (S.gaIds || []).join(",") ].join("|"));
   return new Request(k.toString(), {
     method: "GET"
   });
