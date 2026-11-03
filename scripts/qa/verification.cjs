@@ -412,6 +412,16 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const lp46 = await F(BASE + "/admin/lp-media", { method: "POST", headers: { cookie: (lg.headers.get("set-cookie") || "").split(";")[0] }, body: new URLSearchParams({ hero_d: "https://example.com/a.mp4\nhttps://example.com/b.mp4\nnot-a-link", hero_m: "", cta_d: "", cta_m: "", tiles: "https://example.com/t.mp4 | Contractors", phone: "" }) });
   const j46 = await (await F(BASE + "/join")).text();
   ok(/Hero: 2 computer/.test(await lp46.text()) && /id="hvA"/.test(j46) && /example\.com\/b\.mp4/.test(j46) && !/not-a-link/.test(j46) && /Contractors/.test(j46) && /id="addBizForm"/.test(j46), "T46 Landing videos admin saves the clips (bad links dropped) and /join uses them with the same form", lp46.status);
+  // T47 a homepage big slide can have a video (image kept as fallback); a bad link is refused
+  const ck47 = (lg.headers.get("set-cookie") || "").split(";")[0];
+  sql(`INSERT INTO hero_slides(section,title,subtitle,image_url,href,sort_order,active,created_at) VALUES('big','QA Slide 47','','https://example.com/i.jpg','/',0,1,1)`);
+  sql(`INSERT INTO hero_slides(section,title,subtitle,image_url,href,sort_order,active,created_at) VALUES('tag','QA Tag 47','','https://example.com/t.jpg','/',0,1,1)`);
+  const id47 = sql(`SELECT id FROM hero_slides WHERE title='QA Slide 47'`)[0].id;
+  const bad47 = await F(BASE + "/admin/hero/video", { method: "POST", redirect: "manual", headers: { cookie: ck47 }, body: new URLSearchParams({ id: String(id47), video: "not a link" }) });
+  await F(BASE + "/admin/hero/video", { method: "POST", redirect: "manual", headers: { cookie: ck47 }, body: new URLSearchParams({ id: String(id47), video: "https://example.com/s47.mp4" }) });
+  const h47 = await (await F(BASE + "/")).text();
+  ok(/err=/.test(bad47.headers.get("location") || "") && /data-vsrc="https:\/\/example\.com\/s47\.mp4"/.test(h47) && /QA Slide 47/.test(h47), "T47 homepage big slide video (image kept; bad link refused)", bad47.headers.get("location"));
+  sql(`DELETE FROM hero_slides WHERE title IN ('QA Slide 47','QA Tag 47')`);
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
   const t41pg = await get("/claim/start?id=QA3");
