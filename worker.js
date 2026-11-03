@@ -3307,6 +3307,28 @@ async function activateOwner(env, email, who) {
           r.ghl_id = liveId;
         }
         await ghlRemoveTag(env, liveId, [ "pending-listing" ]).catch(() => {});
+        // Someone could list a business that isn't theirs with their own email and mobile (Eric, 3 Nov: flag these
+        // to the dev edge-case inbox, not sales). Flagged when the owner's email isn't on the business's website
+        // domain AND their verified mobile isn't the business phone.
+        try {
+          const b = await DB.prepare("SELECT name,web,ph FROM businesses WHERE ghl_id=?1").bind(liveId).first();
+          const last10 = x => String(x || "").replace(/\D/g, "").slice(-10);
+          const dom = DOMOF(em), site = HOSTOF(b && b.web || "");
+          const emailOk = !!dom && !!site && (site === dom || site.endsWith("." + dom));
+          const phoneOk = !!last10(who && who.phone) && last10(who && who.phone) === last10(b && b.ph);
+          if (b && !emailOk && !phoneOk) {
+            await ghlAddTag(env, liveId, [ "check-owner" ]).catch(() => {});
+            await ghlNote(env, liveId, `Check the owner: ${em} isn't on the business's website domain (${site || "no website"}) and their verified mobile (${who && who.phone || "-"}) isn't the business phone (${b.ph || "-"}). Sent to the dev edge-case inbox.`).catch(() => {});
+            await devAlert(env, DB, {
+              business: b.name,
+              name: who && who.name || "",
+              email: em,
+              phone: who && who.phone || ""
+            }, "New listing went live — please check the owner", `The owner's email (${em}) isn't on the business's website domain (${site || "no website given"}), and their verified mobile isn't the business phone (${b.ph || "none given"}). Call the business phone to confirm, or hide the listing if it isn't theirs. Tagged check-owner in GHL.`, `${GHL_APP_URL}/v2/location/${env.GHL_LOCATION_ID}/contacts/detail/${liveId}`);
+          }
+        } catch (e) {
+          console.log("check-owner failed: " + e.message);
+        }
       }
       const add = [ "business", "claimed", "Recently Claimed" ], rm = [ "awaiting-owner-login" ];
       if (r.tier === "plus") add.push("featured"); else rm.push("featured");
@@ -9321,7 +9343,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.96-shared";
+const BUILD = "v16.97-shared";
 
 const APP_COOKIE = "gl_app";
 
