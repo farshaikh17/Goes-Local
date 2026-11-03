@@ -439,6 +439,11 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const bad50 = await F(BASE + "/manage/category", { method: "POST", redirect: "manual", headers: { cookie: ownerCookie }, body: new URLSearchParams({ id: "QA8", category: "Not a real category" }) });
   sql(`UPDATE businesses SET cs='home-services', cat='Home Services' WHERE ghl_id='QA8'`);
   ok(/What does QA Eight Bakery do\?/.test(a50) && /action="\/manage\/category"/.test(a50) && !/cat=1/.test(bad50.headers.get("location") || ""), "T50 onboarding asks the category for a listing in Other; an unknown category is refused", bad50.headers.get("location"));
+  // T51 "List your business" with the phone of a listing already on the site does not hold it for whoever fills the
+  // form (that would let a stranger take it over with their own email + mobile) — it points to that listing's claim
+  const t51 = await post("/api/lead", { type: "add", business: "QA Takeover", email: "x51@evil.com", phone: "(813) 555-0108", zip: "33602", address: "8 St", yrs: "2010", is_owner: "yes", owner_name: "Eve Il", owner_email: "x51@evil.com", owner_phone: "8135550199" }, "10.5.1.1");
+  const held51 = sql(`SELECT COUNT(*) n FROM owner_pending WHERE email='x51@evil.com'`)[0].n;
+  ok(/already listed/i.test(txt(t51.html)) && /\/claim\/start\?id=/.test(t51.html) && held51 === 0, "T51 adding with an existing listing's phone → that listing's claim, nothing held for the form-filler", t51.status + " held=" + held51);
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
   const t41pg = await get("/claim/start?id=QA3");

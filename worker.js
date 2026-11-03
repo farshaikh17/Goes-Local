@@ -9321,7 +9321,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.95-shared";
+const BUILD = "v16.96-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -13962,6 +13962,12 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
             console.log("add: phone dedup lookup failed: " + e.message);
           }
         }
+        // Also match our own listings by phone (GHL's lookup can miss, or return a person's contact first).
+        const ph10 = String(l.phone || "").replace(/\D/g, "").slice(-10);
+        if (!cid && DB && ph10.length === 10) try {
+          const m = await DB.prepare("SELECT ghl_id FROM businesses WHERE replace(replace(replace(replace(replace(coalesce(ph,''),' ',''),'(',''),')',''),'-',''),'+','') LIKE ?1 LIMIT 1").bind("%" + ph10).first();
+          if (m && m.ghl_id) cid = m.ghl_id;
+        } catch {}
         // Phone matched a listing that's already on the site: nothing on it changes until the owner proves the phone.
         let matchedLive = false;
         if (cid && DB) try {
@@ -14132,6 +14138,10 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         } catch {}
         const isOwner = String(l.is_owner || "yes") !== "no";
         const ownerEm = NRM(l.owner_email || (isOwner ? l.email : ""));
+        // The phone matched a listing already on the site: anyone can look up a business phone, so typing it here
+        // proves nothing — it goes through the claim, which sends its code to that listing's own phone or email
+        // (v16.96: v16.95 let whoever finished the owner check with their own email and mobile take it over).
+        if (matchedLive && cid && !repeatOf) return R2(NOTICE(d, "This business is already listed", `${l.business || "This business"} is already on ${S.brand}. To manage it, claim it — we'll send a code to the phone or email on the listing to make sure it's yours.`, "Claim this listing", "/claim/start?id=" + encodeURIComponent(cid)));
         const subEm = NRM(l.submit_email || "");
         if (saved && !ownedElsewhere && !repeatOf && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(ownerEm) && !BADMAIL(ownerEm) && await rateOk(env, "addinv:" + (leadIp || "0"), 4)) {
           let rowId = null;
@@ -14140,8 +14150,8 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
             rowId = rr && rr.id;
           } catch {}
           if (rowId) {
-            const key = matchedLive ? cid : cid || "row:" + rowId;
-            await DB.prepare("INSERT INTO owner_pending(ghl_id,email,tier,created_at,claim_id) VALUES(?1,?2,'verified',?3,?4) ON CONFLICT(ghl_id) DO UPDATE SET email=excluded.email, claim_id=excluded.claim_id, created_at=excluded.created_at, reminded_at=NULL WHERE owner_pending.activated_at IS NULL").bind(key, ownerEm, Date.now(), matchedLive ? null : rowId).run();
+            const key = cid || "row:" + rowId;
+            await DB.prepare("INSERT INTO owner_pending(ghl_id,email,tier,created_at,claim_id) VALUES(?1,?2,'verified',?3,?4) ON CONFLICT(ghl_id) DO UPDATE SET email=excluded.email, claim_id=excluded.claim_id, created_at=excluded.created_at, reminded_at=NULL WHERE owner_pending.activated_at IS NULL").bind(key, ownerEm, Date.now(), rowId).run();
             const by = isOwner ? "the owner" : `${l.submit_name || "someone"} (${l.submit_role || "role not given"}${subEm ? ", " + subEm : ""}) for the owner`;
             if (cid) {
               await ghlAddTag(env, cid, [ "awaiting-owner-login" ]).catch(() => {});
