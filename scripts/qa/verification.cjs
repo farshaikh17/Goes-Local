@@ -444,6 +444,16 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const t51 = await post("/api/lead", { type: "add", business: "QA Takeover", email: "x51@evil.com", phone: "(813) 555-0108", zip: "33602", address: "8 St", yrs: "2010", is_owner: "yes", owner_name: "Eve Il", owner_email: "x51@evil.com", owner_phone: "8135550199" }, "10.5.1.1");
   const held51 = sql(`SELECT COUNT(*) n FROM owner_pending WHERE email='x51@evil.com'`)[0].n;
   ok(/already listed/i.test(txt(t51.html)) && /\/claim\/start\?id=/.test(t51.html) && held51 === 0, "T51 adding with an existing listing's phone → that listing's claim, nothing held for the form-filler", t51.status + " held=" + held51);
+  // T52 if building a page fails (database overloaded), the last good copy is served; with none, a 503 "busy" page
+  // with Retry-After — never a 500 (Search Console "Server error (5xx)", Miami 6–8 Nov)
+  const p52 = "/home-services";
+  const ok52 = await F(BASE + p52);
+  await new Promise(r => setTimeout(r, 400));
+  await F(BASE + "/admin/hero/video", { method: "POST", redirect: "manual", headers: { cookie: ck47 }, body: new URLSearchParams({ id: "0", video: "x" }) });
+  const st52 = await F(BASE + p52, { headers: { "x-gl-test-fail": "1" } });
+  const st52h = await st52.text();
+  const bz52 = await F(BASE + "/neighbourhood/qa-never-cached-52", { headers: { "x-gl-test-fail": "1" } });
+  ok(ok52.status === 200 && st52.status === 200 && st52.headers.get("x-gl-cache") === "STALE" && /<h1/.test(st52h) && bz52.status === 503 && bz52.headers.get("retry-after") === "60" && /a little busy/.test(await bz52.text()), "T52 page build fails → spare copy served, else 503 busy with Retry-After (no 500s)", [ ok52.status, st52.status, st52.headers.get("x-gl-cache"), bz52.status, bz52.headers.get("retry-after") ].join(" | "));
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
   const t41pg = await get("/claim/start?id=QA3");

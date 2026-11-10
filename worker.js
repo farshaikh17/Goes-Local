@@ -9343,7 +9343,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.97-shared";
+const BUILD = "v16.98-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -13772,6 +13772,9 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       }
       [d] = await Promise.all([ shell(DB), loadHoods(DB) ]);
     } catch (e) {
+      // v16.98: only a missing table means "not set up"; anything else (D1 overloaded by a scraper burst, 6–8 Nov) is
+      // thrown so edgeHandle serves the last good copy or a short "busy" 503 instead of a 500.
+      if (!/no such table/i.test(String(e && e.message))) throw e;
       return R(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Setup needed</title><style>${CSS}</style></head>\n<body><div class="wrap" style="padding:70px 24px;max-width:680px"><h1>Database not set up yet</h1>\n<div class="blk"><p style="font-family:monospace;font-size:12.5px">${E(e.message)}</p></div>\n<p>Run <a href="/admin/migrate">/admin/migrate</a>, then <a href="/admin/sync">/admin/sync</a>.</p>\n</div></body></html>`, 500);
     }
     if (!d.count) return R(NOTICE(d, "No listings yet", "Run the sync to pull listings in from GoHighLevel.", "Run sync now", "/admin/sync"));
@@ -15584,9 +15587,38 @@ async function edgeKey(u, env) {
   });
 }
 
+// v16.98 — Miami, 6–8 Nov: once a day a scraper sent ~4,700 page requests in one minute from thousands of addresses,
+// D1 answered "overloaded" and ~1,000 visitors (and Googlebot: Search Console "Server error (5xx)") got a 500.
+// Now every good public page is also kept as a long-lived spare copy; if building a page fails, the spare copy is
+// served, and with no spare a short 503 "busy" page with Retry-After (search engines retry later, nothing is dropped).
+const STALE_TTL = 7 * 86400;
+
+function staleKey(u) {
+  const k = new URL(u.origin + u.pathname);
+  for (const [n, v] of [ ...u.searchParams.entries() ].filter(([n]) => EDGE_KEEP.test(n)).sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : 1)) k.searchParams.append(n, v);
+  k.searchParams.set("__stale", "1");
+  return new Request(k.toString(), { method: "GET" });
+}
+
+function busyPage(e) {
+  if (e) console.log("page failed, served busy/stale: " + (e && e.message || e));
+  return new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${E(S.brand)}</title></head><body style="margin:0;font-family:Arial,sans-serif;background:#FBF5EA;color:#12263F;display:flex;min-height:100vh;align-items:center;justify-content:center;text-align:center;padding:24px"><div><h1 style="font-size:24px">We're a little busy right now</h1><p style="color:#5D6F82">Please try again in a minute.</p><p><a href="" style="color:#E4572E;font-weight:700">Try again</a></p></div></body></html>`, { status: 503, headers: { "content-type": "text/html;charset=UTF-8", "retry-after": "60", "cache-control": "no-store" } });
+}
+
+async function safeHandle(req, env, ctx) {
+  try {
+    // Local tests only (BV_TEST_ECHO): pretend the database is overloaded.
+    if (env.BV_TEST_ECHO && req.headers.get("x-gl-test-fail")) throw new Error("D1_ERROR: D1 DB is overloaded (test)");
+    return [ await _base.handle(req, env, ctx), null ];
+  } catch (e) {
+    return [ null, e ];
+  }
+}
+
 async function edgeHandle(req, env, ctx, u) {
   if (!edgeCacheable(req, u)) {
-    const res = await _base.handle(req, env, ctx);
+    const [res, err] = await safeHandle(req, env, ctx);
+    if (!res) return [ busyPage(err), "ERROR" ];
     if (res.status < 400 && (req.method === "POST" && /^\/(admin|manage|webhooks)(\/|$)/.test(u.pathname) || /^\/admin\/(seo\/reset|sync|urlsync|insertone|migrate|duplicates|logos)$/.test(u.pathname))) ctx.waitUntil(bumpCacheGen(env));
     return [ res, "BYPASS" ];
   }
@@ -15596,7 +15628,18 @@ async function edgeHandle(req, env, ctx, u) {
     const hit = await cache.match(key);
     if (hit) return [ hit, "HIT" ];
   } catch {}
-  const res = await _base.handle(req, env, ctx);
+  const [res, err] = await safeHandle(req, env, ctx);
+  if (!res || res.status >= 500) {
+    try {
+      const spare = await cache.match(staleKey(u));
+      if (spare) {
+        if (err) console.log("page failed, served spare copy: " + (err.message || err));
+        return [ spare, "STALE" ];
+      }
+    } catch {}
+    if (!res || /overloaded|D1_ERROR/i.test(err ? String(err.message) : "")) return [ busyPage(err), "ERROR" ];
+    return [ res, "MISS" ];
+  }
   const cc = res.headers.get("cache-control") || "";
   const ct = res.headers.get("content-type") || "";
   const ok = res.status === 200 && !res.headers.has("set-cookie") && (/\bpublic\b/.test(cc) || /\.xml$|^\/(robots|llms)\.txt$/.test(u.pathname) && !/no-store|private/.test(cc)) && /text\/html|xml|text\/plain/.test(ct);
@@ -15604,6 +15647,11 @@ async function edgeHandle(req, env, ctx, u) {
   const store = new Response(res.clone().body, res);
   store.headers.set("cache-control", `public, max-age=${edgeTtl(u.pathname)}`);
   ctx.waitUntil(cache.put(key, store).catch(() => {}));
+  if (req.method === "GET") {
+    const spare = new Response(res.clone().body, res);
+    spare.headers.set("cache-control", `public, max-age=${STALE_TTL}`);
+    ctx.waitUntil(cache.put(staleKey(u), spare).catch(() => {}));
+  }
   return [ res, "MISS" ];
 }
 
@@ -15628,7 +15676,7 @@ export default {
     const out = isApp ? await asAppShell(res, req, u, cameFromApp && !cookieHas) : res;
     const h = new Headers(out.headers);
     h.set("x-gl-cache", cacheState);
-    if (cacheState === "HIT") h.set("cache-control", "public, max-age=120"); else if (cacheState === "BYPASS" && /(?:^|;\s*)(gl_sess|gl_adm)=[^;\s]/.test(req.headers.get("Cookie") || "")) h.set("cache-control", "private, no-cache");
+    if (cacheState === "HIT" || cacheState === "STALE") h.set("cache-control", "public, max-age=120"); else if (cacheState === "BYPASS" && /(?:^|;\s*)(gl_sess|gl_adm)=[^;\s]/.test(req.headers.get("Cookie") || "")) h.set("cache-control", "private, no-cache");
     // Meta Pixel hosts only when the city has a Pixel (v16.88: v16.86 left them out, so browsers blocked the Pixel).
     // v16.92 (Eric: "my boss needs this to work"): also www.facebook.com scripts/frames and graph.facebook.com, which
     // Meta's event setup tool loads into the page.
