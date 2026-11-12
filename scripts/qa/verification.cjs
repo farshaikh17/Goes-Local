@@ -480,6 +480,17 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   sql(`DELETE FROM posts WHERE slug IN ('qa-post-54','qa-post-54b')`);
   sql(`DELETE FROM businesses WHERE ghl_id='QA54'`);
   ok(!/"@type":"Article"/.test(l54) && (l54.match(/BreadcrumbList/g) || []).length === 1 && /"dateModified":"2023/.test(l54) && /"@type":"Article"/.test(m54) && /"author":\{"@type":"Organization","name":"QA Editor Team"/.test(m54) && t54r.status === 200 && /name="robots" content="noindex, follow"/.test(t54) && !/name="robots"/.test(p54) && !/pond-fish-supplier</.test(sm54) && /home-services\/plumber</.test(sm54) && !/\/login</.test(sm54) && /noindex/.test(lg54.headers.get("x-robots-tag") || "") && !/Crawl-delay/.test(rb54) && /User-agent: GPTBot[\s\S]*?Disallow: \/admin\n/.test(rb54), "T54 SEO: post schema not doubled (+dateModified), team author = Organization, thin sub-category noindex + not in sitemap, /login noindex, robots", [ (l54.match(/BreadcrumbList/g) || []).length, /"@type":"Article"/.test(l54), /"dateModified":"2023/.test(l54), /"@type":"Article"/.test(m54), /Organization","name":"QA Editor/.test(m54), t54r.status, /noindex/.test(t54), /name="robots"/.test(p54), /pond-fish-supplier</.test(sm54), /plumber</.test(sm54), /\/login</.test(sm54), lg54.headers.get("x-robots-tag"), /Crawl-delay/.test(rb54), /User-agent: GPTBot[\s\S]*?Disallow: \/admin\n/.test(rb54) ].join(" | "));
+  // T55 "Related guides" pick posts on the same topic (category, shared words), not just the newest; never empty
+  sql(`INSERT INTO posts(slug,title,excerpt,body,author,published,created_at,blog_cat,archived) VALUES
+    ('qa-roof-cost-55','QA Roof Cost Guide','x','<p>a</p>','A',1,1700000000000,'Contractors & Construction',0),
+    ('qa-roofing-pick-55','QA Best Roofing Companies','x','<p>a</p>','A',1,1700000100000,'Contractors & Construction',0),
+    ('qa-nails-55','QA Nail Salon Guide','x','<p>a</p>','A',1,1700000900000,'Beauty & Personal Care',0),
+    ('qa-cakes-55','QA Cake Shops','x','<p>a</p>','A',1,1700000800000,'Cafes, Bakery & Desserts',0)`);
+  const r55 = await (await F(BASE + "/blog/qa-roof-cost-55?page=55")).text();
+  const box55 = (r55.split('class="bp-more"')[1] || "");
+  const order55 = [ ...box55.matchAll(/href="\/blog\/([a-z0-9-]+)"/g) ].map(m => m[1]);
+  sql(`DELETE FROM posts WHERE slug LIKE 'qa-%-55'`);
+  ok(/<h2>Related guides<\/h2>/.test(box55) && order55[0] === "qa-roofing-pick-55" && order55.length >= 3 && !order55.includes("qa-roof-cost-55"), "T55 Related guides: same-topic post first, box filled, never links to itself", order55.join(","));
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
   const t41pg = await get("/claim/start?id=QA3");

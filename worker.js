@@ -6648,7 +6648,9 @@ h1.brag-h1 span{color:var(--coral)}
 .bp-all{display:block;margin-top:8px;font-weight:700;font-size:13.5px}
 .bp-own{background:var(--navy);color:#fff;border-color:var(--navy)}.bp-own b{font-family:${T.serif};font-size:18px;display:block;margin-bottom:4px}.bp-own p{margin:0 0 12px;font-size:13.5px;color:rgba(255,255,255,.85)}.bp-own a{display:inline-block;background:var(--coral);color:#fff;border-radius:999px;padding:9px 16px;font-weight:700;font-size:13.5px}
 .bp-cta{display:flex;align-items:center;gap:14px;background:#FDEBE4;border:1px solid #F6C9B8;border-radius:16px;padding:16px 18px;margin-top:26px}.bp-cta b{font-family:${T.serif};color:var(--navy);font-size:17px;display:block}.bp-cta span{font-size:13.5px;color:${T.body}}.bp-cta a{margin-left:auto;background:var(--coral);color:#fff;border-radius:999px;padding:10px 18px;font-weight:700;font-size:14px;text-align:center}
-.bp-more{max-width:1112px;margin:0 auto 50px}.bp-more h2{margin-bottom:14px}.bp-more-g{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.bp-more-g a{background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden;color:inherit;box-shadow:var(--sh)}.bp-more-g img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block}.bp-more-g b{display:block;padding:12px 14px;font-family:${T.serif};color:var(--navy);font-size:16px;line-height:1.3}
+.bp-more{max-width:1112px;margin:0 auto 50px}.bp-more h2{margin-bottom:14px}.bp-more-g{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.bp-more-g a{background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden;color:inherit;box-shadow:var(--sh)}.bp-more-g img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block}
+.bp-more-g small{display:block;padding:12px 14px 0;font-size:11.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted,#7A8CA0)}
+.bp-more-g small+b{padding-top:4px}.bp-more-g b{display:block;padding:12px 14px;font-family:${T.serif};color:var(--navy);font-size:16px;line-height:1.3}
 .post-body h2[id]{scroll-margin-top:20px}
 @media(max-width:1000px){.bpl{grid-template-columns:minmax(0,1fr)}.bpl-side{position:static}.bp-toc{display:none}.bp-more-g{grid-template-columns:1fr}.bp-cta{flex-direction:column;align-items:flex-start}.bp-cta a{margin-left:0}}
 .lgp{border-radius:22px;overflow:hidden;position:relative;min-height:520px;background:var(--navy) center/cover;color:#fff;display:flex;flex-direction:column;justify-content:flex-end}
@@ -8874,6 +8876,40 @@ const BLOGINDEX = (d, posts, cats, activeCat) => PAGE(d, {
   body: `<div class="wrap"><nav class="crumb"><a href="/">Home</a> / Blog</nav>\n<div style="padding:14px 0 26px"><div class="kicker">The Local Edit</div><h1>${E(S.brand)} Blog</h1>\n<p style="color:${T.body};margin-top:8px">Guides, spotlights and news for ${E(S.city)}.</p></div>\n${(cats || []).length ? `<div class="chips" style="margin-bottom:26px">\n<a class="chip" href="/blog"${!activeCat ? ` style="border-color:${T.coral};color:${T.coral}"` : ""}>All</a>\n${cats.map(c => `<a class="chip" href="/blog?cat=${encodeURIComponent(c)}"${activeCat === c ? ` style="border-color:${T.coral};color:${T.coral}"` : ""}>${E(c)}</a>`).join("")}\n</div>` : ""}\n${posts.length ? `<div class="grid g2" style="margin-bottom:44px">${posts.map(POSTCARD).join("")}</div>` : `<div class="empty" style="margin-bottom:44px"><b>Nothing published yet.</b><p style="margin:8px 0 0">Check back soon.</p></div>`}\n</div>`
 });
 
+// v17.01 (Eric, 12 Nov, safeguard 3): "Related guides" at the end of every post are picked by topic, not date, so a
+// post is never left without links to similar guides. Score: same neighbourhood (named in the title/address or linked
+// in the post) 4, same blog sub-category 3, same blog category 2, each shared subject word in the address 1 (max 3).
+// Guides the post already links to rank lower (×0.4) so the box adds new links, but still beat unrelated ones. Gaps are filled with the newest guides.
+const REL_STOP = new Set("a an and the of in on for to how what why where when best top guide guides complete your you our near cost costs price prices 2025 2026 2027 vs choose choosing things do find local area types".split(" "));
+
+// Neighbourhoods (slugs) whose name appears as whole words in the text; the city's own name doesn't count.
+const RELHOODS = t => {
+  const city = SL(S.city), low = " " + String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ") + " ";
+  return HOODS_LIVE().filter(h => h.name && h.name.length > 3 && SL(h.name) !== city && low.includes(" " + String(h.name).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() + " ")).map(h => h.slug);
+};
+
+function RELATEDPOSTS(post, all, area) {
+  // Light stemming so "contractors"/"contractor" and "roofing"/"roof" match.
+  const stem = w => w.length > 5 && w.endsWith("ing") ? w.slice(0, -3) : w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w;
+  const city = SL(S.city), words = t => SL(t).split("-").filter(w => w.length > 2 && !REL_STOP.has(w) && w !== city && !/^\d+$/.test(w)).map(stem);
+  const hoodsIn = RELHOODS;
+  const myHoods = new Set([ ...hoodsIn(post.title + " " + String(post.slug).replace(/-/g, " ")), ...area ? [ area.slug ] : [] ]);
+  const myWords = new Set(words(post.slug));
+  const body = String(post.body_html || post.body || "");
+  const scored = all.map((r, i) => {
+    let sc = 0;
+    const rh = hoodsIn(r.title + " " + String(r.slug).replace(/-/g, " "));
+    if (rh.some(h => myHoods.has(h))) sc += 4;
+    if (post.blog_subcat && r.blog_subcat && post.blog_subcat === r.blog_subcat) sc += 3; else if (post.blog_cat && r.blog_cat && post.blog_cat === r.blog_cat) sc += 2;
+    sc += Math.min(3, words(r.slug).filter(w => myWords.has(w)).length);
+    if (sc && body.includes(`/blog/${r.slug}`)) sc *= 0.4;
+    return { r, sc, i, hood: rh.find(h => myHoods.has(h)) || "" };
+  });
+  const top = scored.filter(x => x.sc > 0).sort((a, b) => b.sc - a.sc || a.i - b.i).slice(0, 3);
+  for (const x of scored) if (top.length < 3 && !top.includes(x)) top.push(x);
+  return top.map(x => ({ ...x.r, label: x.hood ? hoodName(x.hood) : x.r.blog_cat || "" }));
+}
+
 const BLOGPOST = (d, p, x) => {
   x = x || {};
   // Body: drop trailing empty paragraphs (they left a big gap above the end box) and give each
@@ -8964,7 +9000,7 @@ const BLOGPOST = (d, p, x) => {
       year: "numeric",
       month: "long",
       day: "numeric"
-    })}${p.author ? " · " + E(p.author) : ""}</p>\n<div class="post-body" style="font-size:16px;line-height:1.7">${bodyHtml}</div>\n${(x.taggedBiz || []).length ? `<div style="margin-top:24px;padding-top:20px;border-top:1px solid ${T.line}">\n<b style="font-size:13px;color:${T.muted}">Featured in this post:</b>\n<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">\n${x.taggedBiz.map(b => `<a class="btn btn-o btn-sm" href="/${E(b.cs)}/${E(b.slug)}">${E(b.name)}</a>`).join("")}\n</div></div>` : ""}\n${p.cta_label ? `<div class="bp-cta"><div><b>${x.area ? `Explore ${E(x.area.name)}` : "Keep exploring"}</b><span>${p.cta_desc ? E(p.cta_desc) : "Local businesses, ratings and opening hours."}</span></div><a href="${E(String(p.cta_link || "/").replace(/[.,;]+$/, ""))}">${E(p.cta_label)} →</a></div>` : ""}\n<a class="btn btn-o" style="margin-top:26px" href="/blog">← Back to the blog</a>\n</div>\n</article>\n<div class="blk" style="margin:30px 0 0">\n<h2>Comments${(x.comments || []).length ? ` (${x.comments.length})` : ""}</h2>\n${(x.comments || []).length ? `<div class="rows">${x.comments.map(c => `<div class="row" style="padding:12px 0;border-bottom:1px solid ${T.line}">\n<b style="font-size:13px">${E(c.commenter_name || "A reader")}</b>\n<p style="margin-top:4px;color:${T.body}">${E(c.body)}</p>\n${c.admin_reply ? `<div style="margin-top:10px;margin-left:16px;padding:10px 12px;background:${T.sand};border-radius:${T.r}">\n<b style="font-size:12px;color:${T.navy}">${E(S.brand)}</b>\n<p style="font-size:13.5px;color:${T.body};margin-top:2px">${E(c.admin_reply)}</p></div>` : ""}\n</div>`).join("")}</div>` : `<p style="color:${T.muted}">No comments yet — be the first.</p>`}\n${x.session ? `<form method="POST" action="/api/comment" style="margin-top:16px">\n<input type="hidden" name="postId" value="${p.id}">\n<div class="fld2"><label for="cb">Add a comment</label><textarea id="cb" name="body" maxlength="1000" required></textarea></div>\n<button class="btn btn-o">Post comment</button>\n<p style="font-size:11px;color:${T.faint};margin-top:6px">Comments are moderated before they appear.</p>\n</form>` : `<p style="margin-top:10px"><a href="/signup">Create an account</a> or <a href="/login">sign in</a> to comment.</p>`}\n</div>\n</div>\n<aside class="bpl-side">\n${toc.length > 1 ? `<div class="bp-box bp-toc"><h4>In this guide</h4>${toc.map(t => `<a href="#${t.id}">${E(t.text)}</a>`).join("")}</div>` : ""}\n${sideBiz.length ? `<div class="bp-box"><h4>${x.area ? `Businesses in ${E(x.area.name)}` : "Featured in this guide"}</h4>${sideBiz.map(b => `<a class="bp-biz" href="/${E(b.cs)}/${E(b.slug)}"><span class="bp-ph">${PHOTO(b)}</span><span><b>${E(b.name)}</b><em>${E(b.hood ? hoodName(b.hood) : b.cat || "")}</em></span></a>`).join("")}${x.area ? `<a class="bp-all" href="/${AREA.path}/${E(x.area.slug)}">See all in ${E(x.area.name)} →</a>` : ""}</div>` : ""}\n<div class="bp-box bp-own"><b>Own a${x.area ? " " + E(x.area.name) : " local"} business?</b><p>Get in front of people reading this guide. Claim your free listing.</p><a href="/claim">Claim free →</a></div>\n</aside></div>\n${(x.related || []).length ? `<div class="bp-more"><h2>Keep reading</h2><div class="bp-more-g">${x.related.map(r => `<a href="/blog/${E(r.slug)}">${r.cover_image ? `<img src="${E(r.cover_image)}" alt="${E(r.title)}" loading="lazy">` : ""}<b>${E(r.title)}</b></a>`).join("")}</div></div>` : ""}\n</div>`
+    })}${p.author ? " · " + E(p.author) : ""}</p>\n<div class="post-body" style="font-size:16px;line-height:1.7">${bodyHtml}</div>\n${(x.taggedBiz || []).length ? `<div style="margin-top:24px;padding-top:20px;border-top:1px solid ${T.line}">\n<b style="font-size:13px;color:${T.muted}">Featured in this post:</b>\n<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">\n${x.taggedBiz.map(b => `<a class="btn btn-o btn-sm" href="/${E(b.cs)}/${E(b.slug)}">${E(b.name)}</a>`).join("")}\n</div></div>` : ""}\n${p.cta_label ? `<div class="bp-cta"><div><b>${x.area ? `Explore ${E(x.area.name)}` : "Keep exploring"}</b><span>${p.cta_desc ? E(p.cta_desc) : "Local businesses, ratings and opening hours."}</span></div><a href="${E(String(p.cta_link || "/").replace(/[.,;]+$/, ""))}">${E(p.cta_label)} →</a></div>` : ""}\n<a class="btn btn-o" style="margin-top:26px" href="/blog">← Back to the blog</a>\n</div>\n</article>\n<div class="blk" style="margin:30px 0 0">\n<h2>Comments${(x.comments || []).length ? ` (${x.comments.length})` : ""}</h2>\n${(x.comments || []).length ? `<div class="rows">${x.comments.map(c => `<div class="row" style="padding:12px 0;border-bottom:1px solid ${T.line}">\n<b style="font-size:13px">${E(c.commenter_name || "A reader")}</b>\n<p style="margin-top:4px;color:${T.body}">${E(c.body)}</p>\n${c.admin_reply ? `<div style="margin-top:10px;margin-left:16px;padding:10px 12px;background:${T.sand};border-radius:${T.r}">\n<b style="font-size:12px;color:${T.navy}">${E(S.brand)}</b>\n<p style="font-size:13.5px;color:${T.body};margin-top:2px">${E(c.admin_reply)}</p></div>` : ""}\n</div>`).join("")}</div>` : `<p style="color:${T.muted}">No comments yet — be the first.</p>`}\n${x.session ? `<form method="POST" action="/api/comment" style="margin-top:16px">\n<input type="hidden" name="postId" value="${p.id}">\n<div class="fld2"><label for="cb">Add a comment</label><textarea id="cb" name="body" maxlength="1000" required></textarea></div>\n<button class="btn btn-o">Post comment</button>\n<p style="font-size:11px;color:${T.faint};margin-top:6px">Comments are moderated before they appear.</p>\n</form>` : `<p style="margin-top:10px"><a href="/signup">Create an account</a> or <a href="/login">sign in</a> to comment.</p>`}\n</div>\n</div>\n<aside class="bpl-side">\n${toc.length > 1 ? `<div class="bp-box bp-toc"><h4>In this guide</h4>${toc.map(t => `<a href="#${t.id}">${E(t.text)}</a>`).join("")}</div>` : ""}\n${sideBiz.length ? `<div class="bp-box"><h4>${x.area ? `Businesses in ${E(x.area.name)}` : "Featured in this guide"}</h4>${sideBiz.map(b => `<a class="bp-biz" href="/${E(b.cs)}/${E(b.slug)}"><span class="bp-ph">${PHOTO(b)}</span><span><b>${E(b.name)}</b><em>${E(b.hood ? hoodName(b.hood) : b.cat || "")}</em></span></a>`).join("")}${x.area ? `<a class="bp-all" href="/${AREA.path}/${E(x.area.slug)}">See all in ${E(x.area.name)} →</a>` : ""}</div>` : ""}\n<div class="bp-box bp-own"><b>Own a${x.area ? " " + E(x.area.name) : " local"} business?</b><p>Get in front of people reading this guide. Claim your free listing.</p><a href="/claim">Claim free →</a></div>\n</aside></div>\n${(x.related || []).length ? `<div class="bp-more"><h2>Related guides</h2><div class="bp-more-g">${(x.area ? x.related.slice(0, 2) : x.related).map(r => `<a href="/blog/${E(r.slug)}">${r.cover_image ? `<img src="${E(r.cover_image)}" alt="${E(r.title)}" loading="lazy">` : ""}${r.label ? `<small>${E(r.label)}</small>` : ""}<b>${E(r.title)}</b></a>`).join("")}${x.area ? `<a href="/${AREA.path}/${E(x.area.slug)}"><img src="${E(HOODIMG(x.area.slug))}" alt="${E(x.area.name)}" loading="lazy"><small>${E(AREA.one)}</small><b>All businesses in ${E(x.area.name)} →</b></a>` : ""}</div></div>` : ""}\n</div>`
   });
 };
 
@@ -9469,7 +9505,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.00-shared";
+const BUILD = "v17.01-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -14897,11 +14933,14 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       if (DB) {
         const hm = new RegExp("/(?:neighbourhood|" + AREA.path + ")/([a-z0-9-]+)").exec(String(post.cta_link || "") + " " + String(post.body_html || post.body || ""));
         area = hm ? HOODS_LIVE().find(h => h.slug === hm[1]) || null : null;
+        // v17.01: a neighbourhood named in the title ("Things to Do in Brickell") counts too.
+        if (!area) area = RELHOODS(post.title + " " + String(post.slug).replace(/-/g, " ")).map(slug => HOODS_LIVE().find(h => h.slug === slug)).find(Boolean) || null;
         [sideBiz, related] = await Promise.all([
           area ? DB.prepare("SELECT * FROM businesses WHERE hood=?1 ORDER BY claimed DESC, rev DESC LIMIT 4").bind(area.slug).all().then(r => (r.results || []).map(ROWOF)).catch(() => [])
             : tagIds.length ? DB.prepare(`SELECT * FROM businesses WHERE ghl_id IN (${tagIds.slice(0, 4).map((_, i) => "?" + (i + 1)).join(",")})`).bind(...tagIds.slice(0, 4)).all().then(r => (r.results || []).map(ROWOF)).catch(() => []) : [],
-          DB.prepare("SELECT title,slug,cover_image FROM posts WHERE published=1 AND archived=0 AND id<>?1 ORDER BY created_at DESC LIMIT 3").bind(post.id).all().then(r => r.results || []).catch(() => [])
+          DB.prepare("SELECT id,title,slug,cover_image,blog_cat,blog_subcat,created_at FROM posts WHERE published=1 AND archived=0 AND id<>?1 ORDER BY created_at DESC LIMIT 400").bind(post.id).all().then(r => r.results || []).catch(() => [])
         ]);
+        related = RELATEDPOSTS(post, related, area);
       }
       return R(BLOGPOST(d, post, {
         session: s,
