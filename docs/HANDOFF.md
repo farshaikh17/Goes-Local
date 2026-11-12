@@ -26,6 +26,11 @@
   Meta domain-verification code (CITY_META_DOMAIN_VERIFY); Tampa decision after the GHL ticket; Search Console
   "Validate fix" retry for the 5xx report; Miami's ADMIN_NOTIFY_EMAIL variable holds a number (fallback only).
 - **Live QA rule:** never text a real phone (CLAUDE.md); phone codes are tested locally with BV_TEST_ECHO.
+- **Removing a closed business** (Threshold Management, Miami, 12 Nov): in GHL remove the `business` tag, add
+  `closed` and a note; delete its row from `businesses`; **also remove the `business` tag from any hidden duplicate
+  copy** (`SELECT ghl_id FROM dup_hidden WHERE keep_id=<id>`) and delete those dup_hidden/slug_redirects rows —
+  otherwise dedupeListings releases the copy on the next sync because its kept listing is gone, and the business
+  reappears. Then rebuild biz_fts and bump the cache (any admin POST). The old address returns 404.
 - **Live browser checks:** send the x-gl-check header only to our own domains (Playwright `context.route(/goeslocal\.com/)`);
   adding it to every request makes Google Fonts refuse the font files and pages look font-less in screenshots.
 - **SEO:** the SEO team's audit (12 Nov) is handled in v17.00–v17.01 (robots, thin pages noindex, blog schema not
