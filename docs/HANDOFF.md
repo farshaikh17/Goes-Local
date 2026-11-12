@@ -8,6 +8,25 @@
 
 > **Status updates since the handoff** are tracked in `docs/DEPLOY.md` (deploy setup) and `changelog/`.
 
+## Current status — 12 Nov 2026 (read this first)
+
+- **Live:** Miami and Orlando on the shared worker (v16.98 live; v16.99 committed, awaiting Eric's go-ahead).
+  Miami ~17,800 listings, Orlando ~13,600. North Carolina (states branch) is up.
+- **Switched off (maintenance page, 503):** Tampa and the NY/IL/GA/MA/PA state sites since 28 Oct — see
+  `docs/MAINTENANCE.md`. Tampa's GHL sub-account is inactive after the 27–28 Oct sign-up flood (`changelog/v16.81.md`);
+  a GHL refund ticket is open. Restore = deploy the real worker for that env, then /debug and a click-through.
+- **Last full QA:** 11–12 Nov (`changelog/v16.99.md`): no page, link, admin or worker errors on either city.
+- **Protection in place:** Tor POSTs refused + WAF rule (v16.81); sign-up honeypot, per-IP and site-wide email caps
+  (v16.81); owner email + mobile verification before a new or claimed listing counts (v16.86–v16.97); D1 overload →
+  spare page copy or 503 busy, never 500 (v16.98); out-of-area listings hidden (v16.99).
+- **Data rules:** GHL contacts tagged `business` are the directory; duplicates are hidden on the site (`dup_hidden`,
+  tagged `duplicate` in GHL from v16.99); competitors (`competitor_hidden`) and out-of-state addresses (`area_hidden`)
+  are hidden; nothing is deleted from GHL by the site.
+- **Waiting on Eric / outside:** Orlando's Meta Pixel ID (CITY_META_PIXEL) and videos (Admin → Content → Videos);
+  Meta domain-verification code (CITY_META_DOMAIN_VERIFY); Tampa decision after the GHL ticket; Search Console
+  "Validate fix" retry for the 5xx report; Miami's ADMIN_NOTIFY_EMAIL variable holds a number (fallback only).
+- **Live QA rule:** never text a real phone (CLAUDE.md); phone codes are tested locally with BV_TEST_ECHO.
+
 ---
 
 ## 0. The five rules that matter most
@@ -126,6 +145,9 @@ Per-city JSON-LD for fixed pages lives in D1, not code.
 ---
 
 ## 5. Open work, in priority order
+
+> Sections 5a–5c are done: 5a (sync writes only changed rows, fingerprint `FP`), 5b (the /blog 500s were D1
+> contention; v16.98 serves a spare copy or 503 instead), 5c (resolved 25 Sep).
 
 ### 5a. D1 write cost — sync writes every listing every 5 minutes (approved)
 $26 in one cycle, 100% D1 Rows Written (75.8M; 50M free). The cron sync does a full `INSERT … ON CONFLICT(ghl_id) DO UPDATE` for every business every pass. Two near-identical copies: the bulk loop in `syncStep()` and the single-record helper behind `/admin/insertone`.
