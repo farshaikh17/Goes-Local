@@ -10,7 +10,7 @@
 
 ## Current status — 12 Nov 2026 (read this first)
 
-- **Live:** Miami and Orlando on the shared worker (v17.01 live, 12 Nov).
+- **Live:** Miami and Orlando on the shared worker (v17.02 live, 12 Nov).
   Miami ~17,800 listings, Orlando ~13,600. North Carolina (states branch) is up.
 - **Switched off (maintenance page, 503):** Tampa and the NY/IL/GA/MA/PA state sites since 28 Oct — see
   `docs/MAINTENANCE.md`. Tampa's GHL sub-account is inactive after the 27–28 Oct sign-up flood (`changelog/v16.81.md`);
