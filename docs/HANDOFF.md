@@ -10,7 +10,7 @@
 
 ## Current status — 12 Nov 2026 (read this first)
 
-- **Live:** Miami and Orlando on the shared worker (v16.99 live, 12 Nov).
+- **Live:** Miami and Orlando on the shared worker (v17.01 live, 12 Nov).
   Miami ~17,800 listings, Orlando ~13,600. North Carolina (states branch) is up.
 - **Switched off (maintenance page, 503):** Tampa and the NY/IL/GA/MA/PA state sites since 28 Oct — see
   `docs/MAINTENANCE.md`. Tampa's GHL sub-account is inactive after the 27–28 Oct sign-up flood (`changelog/v16.81.md`);
@@ -26,6 +26,11 @@
   Meta domain-verification code (CITY_META_DOMAIN_VERIFY); Tampa decision after the GHL ticket; Search Console
   "Validate fix" retry for the 5xx report; Miami's ADMIN_NOTIFY_EMAIL variable holds a number (fallback only).
 - **Live QA rule:** never text a real phone (CLAUDE.md); phone codes are tested locally with BV_TEST_ECHO.
+- **Live browser checks:** send the x-gl-check header only to our own domains (Playwright `context.route(/goeslocal\.com/)`);
+  adding it to every request makes Google Fonts refuse the font files and pages look font-less in screenshots.
+- **SEO:** the SEO team's audit (12 Nov) is handled in v17.00–v17.01 (robots, thin pages noindex, blog schema not
+  doubled, fonts non-blocking, smaller photos, topic-based Related guides). Their open items are listed in
+  changelog/v17.00.md.
 
 ---
 
