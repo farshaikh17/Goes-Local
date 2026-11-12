@@ -5369,8 +5369,8 @@ async function ghlFindOrCreateContact(env, email, opt) {
         lastName: nm.lastName,
         phone: opt.phone || undefined,
         companyName: opt.companyName || undefined,
-        tags: [ "owner-account", "consumer" ],
-        source: "Goes Local login"
+        tags: opt.tags || [ "owner-account", "consumer" ],
+        source: opt.source || "Goes Local login"
       })
     });
     if (!r.ok) {
@@ -6142,6 +6142,16 @@ const EMAIL_TEMPLATES = {
     body: "<p style=\"font-size:16px\"><b>{{business}}</b></p>\n<p><b>Submitted:</b> {{when}}<br>\n<b>Listing category:</b> {{bizCategory}}<br>\n<b>Listing address:</b> {{bizAddress}}<br>\n<b>Listing phone on file:</b> {{bizPhone}}</p>\n<p><b>Claimant name:</b> {{name}}<br>\n<b>Email:</b> {{email}}<br>\n<b>Phone:</b> {{phone}}<br>\n<b>Role at business:</b> {{role}}</p>\n<p><b>Owner name (if not claimant):</b> {{ownerName}}<br>\n<b>Owner email:</b> {{ownerEmail}}<br>\n<b>Owner phone:</b> {{ownerPhone}}</p>\n<p><b>Notes from claimant:</b><br>{{notes}}</p>\n<p><b>Already claimed?</b> {{alreadyText}}<br>\n<b>System note:</b> {{tier}} ({{reason}})</p>",
     btn: ""
   },
+  admin_contact_message: {
+    label: "[Admin] Message from the Contact us page",
+    description: "Sent to the \"Messages from the Contact us page\" list when someone sends the form at /contact. Reports that a listing is wrong or closed go to the \"Edge cases\" list instead. The message is also saved as a note on the person's contact in your CRM, tagged contact-form.",
+    internal: true,
+    vars: [ "topic", "name", "email", "phone", "page", "message", "when" ],
+    subject: "Contact form: {{topic}} — {{name}}",
+    title: "New message from the Contact us page",
+    body: "<p><b>Topic:</b> {{topic}}<br>\n<b>From:</b> {{name}} · {{email}} · {{phone}}<br>\n<b>Business or page:</b> {{page}}<br>\n<b>When:</b> {{when}}</p>\n<p style=\"white-space:pre-wrap\">{{message}}</p>\n<p style=\"font-size:12.5px;color:#7A8CA0\">Reply to the sender directly at their email address.</p>",
+    btn: ""
+  },
   admin_needs_dev: {
     label: "[Admin] Edge case for the dev team",
     description: "Sent to the \"Edge cases\" notification list (default: the dev inbox) when the website can't finish a claim or new listing by itself — no way to send a code, the owner asked for a manual check, an ownership dispute, or a publish error.",
@@ -6340,7 +6350,8 @@ const NOTIFY_KINDS = {
   ad_request: "Ad space requests",
   deletion_request: "Deletion requests",
   enquiry: "Customer messages to businesses that haven't claimed their listing",
-  needs_dev: "Edge cases the website couldn't finish by itself (dev team)"
+  needs_dev: "Edge cases the website couldn't finish by itself (dev team)",
+  contact: "Messages from the Contact us page"
 };
 const NOTIFY_TPL = {
   new_listing: "admin_new_listing",
@@ -6349,7 +6360,8 @@ const NOTIFY_TPL = {
   ad_request: "admin_ad_request",
   deletion_request: "admin_deletion_request",
   enquiry: "admin_enquiry",
-  needs_dev: "admin_needs_dev"
+  needs_dev: "admin_needs_dev",
+  contact: "admin_contact_message"
 };
 const DEFAULT_NOTIFY_EMAIL = "dev1@mianrosystems.com";
 
@@ -7105,7 +7117,7 @@ const LOGO = dark => BRANDLOGO() ? `<a class="lg" href="/"><img src="${E(BRANDLO
 
 const HEADER = d => `<header class="hd"><div class="wrap hd-in">\n<button type="button" class="mnav-toggle" id="mnavToggle" aria-label="Menu" aria-expanded="false">\n<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>\n${LOGO()}\n<nav class="nav" id="mnavList"><a href="/">Discover</a><a href="/login" class="mnav-only">Log in / My account</a>${CATMENU(d)}${NAV.filter(n => n.label !== "Discover" && n.label !== "Categories").map(n => n.href === "/best" ? `<a href="/best" class="nav-best" style="color:${T.coral};font-weight:700;display:inline-flex;align-items:center;gap:6px">${TROPHY}${E(BEST_LABEL())}</a>` : `<a href="${E(n.href)}">${E(n.label)}</a>`).join("")}</nav>\n<span class="hd-r" id="hdAuth"><a class="txt" href="/account" id="hdProfileLink" style="display:none">My Profile</a><a class="txt" href="/login" id="hdAuthLink">Log in</a>\n<a class="btn btn-p" href="/add">List Your Business</a></span></div></header>\n<script>(function(){\nvar mt=document.getElementById("mnavToggle"),mn=document.getElementById("mnavList");\nif(mt&&mn)mt.addEventListener("click",function(){\n  var open=mn.classList.toggle("open");\n  mt.setAttribute("aria-expanded",open?"true":"false")});\nif(document.cookie.indexOf("gl_who=1")>-1){\n  var a=document.getElementById("hdAuthLink");\n  if(a){a.textContent="Sign out";a.href="/logout"}\n  var pr=document.getElementById("hdProfileLink");\n  if(pr)pr.style.display="inline"}\nvar m=document.querySelector(".has-mega");\nif(m){var s=m.querySelector("span");\n  if(s)s.addEventListener("click",function(e){\n    if(window.matchMedia("(hover: hover)").matches)return;\n    e.preventDefault();m.classList.toggle("open")})}\ndocument.addEventListener("click",function(e){\n  var opened=e.target.closest(".facc");\n  document.querySelectorAll(".facc[open]").forEach(function(d){\n    if(d!==opened)d.removeAttribute("open")})\n  var openedSub=e.target.closest(".facc-sub");\n  document.querySelectorAll(".facc-sub[open]").forEach(function(d){\n    if(d!==openedSub)d.removeAttribute("open")})\n});\ndocument.addEventListener("click",function(e){\n  var btn=e.target.closest(".subchip-arrow");\n  if(!btn)return;\n  var row=btn.closest(".subchip-row");\n  var track=row&&row.querySelector(".subchip-track");\n  if(!track)return;\n  var amt=Math.max(track.clientWidth*0.8,160);\n  track.scrollBy({left:btn.classList.contains("subchip-prev")?-amt:amt,behavior:"smooth"})});\ndocument.addEventListener("click",function(e){\n  var t=e.target.closest("[data-share-url]");\n  if(!t)return;\n  var url=t.getAttribute("data-share-url"),name=t.getAttribute("data-share-name")||document.title;\n  if(navigator.share){navigator.share({title:name,url:url}).catch(function(){})}\n  else if(navigator.clipboard){navigator.clipboard.writeText(url).then(function(){\n    var old=t.textContent;t.textContent="Copied!";setTimeout(function(){t.textContent=old},1500)})}\n});\n})();<\/script>`;
 
-const FOOTER = d => `<footer class="ft"><div class="wrap"><div class="fg">\n<div>${LOGO()}<p>${E(BRAG())}, ${AREA.byCity ? "helping people find trusted " + E(NOUNLO()) + " pros" : "helping neighbours find trusted local businesses"}, and helping owners get discovered for free.</p>\n\n<button type="button" class="btn btn-p btn-sm footer-install-cta footer-install-mobile">Add this app to your phone</button>\n<button type="button" class="btn btn-o btn-sm footer-install-cta footer-install-desktop">Get quicker access — install the app</button>\n</div>\n<div><h4>Categories</h4><div class="fl">${(d.cats || []).slice(0, 6).map(c => `<a href="/${E(c.slug)}">${E(c.name)}</a>`).join("")}<a href="/best">${E(BEST_LABEL())} →</a></div></div>\n<div><h4>${E(AREA.many)}</h4><div class="fl">${HOODS_LIVE().slice(0, 6).map(h => `<a href="/${AREA.path}/${E(h.slug)}">${E(h.name)}</a>`).join("")}${HOODS_LIVE().length > 6 ? `<a href="/${AREA.paths}">See all →</a>` : ""}</div></div>\n<div><h4>For Businesses</h4><div class="fl"><a href="/add">List your business</a><a href="/claim">Claim a listing</a>\n<a href="/login">Log in</a><a href="/claim">Verification</a></div></div>\n<div><h4>Company</h4><div class="fl"><a href="/about">About</a><a href="/blog">Blog</a><a href="/news">News</a>${S.freeOnly ? "" : `<a href="/pricing">Pricing</a>`}<a href="/privacy">Privacy</a>\n<a href="/terms">Terms</a><a href="/photo-credits">Photo credits</a></div></div>\n</div><div class="fb">\n<span>Owned and Operated by Mianro Systems · © ${(new Date).getFullYear()} ${E(S.brand)}</span>\n<span>Made with <span style="color:${T.coral}">&#10084;</span> by <a href="https://mianrosystems.com" rel="noopener">Mianro Systems</a></span>\n</div></div></footer>`;
+const FOOTER = d => `<footer class="ft"><div class="wrap"><div class="fg">\n<div>${LOGO()}<p>${E(BRAG())}, ${AREA.byCity ? "helping people find trusted " + E(NOUNLO()) + " pros" : "helping neighbours find trusted local businesses"}, and helping owners get discovered for free.</p>\n\n<button type="button" class="btn btn-p btn-sm footer-install-cta footer-install-mobile">Add this app to your phone</button>\n<button type="button" class="btn btn-o btn-sm footer-install-cta footer-install-desktop">Get quicker access — install the app</button>\n</div>\n<div><h4>Categories</h4><div class="fl">${(d.cats || []).slice(0, 6).map(c => `<a href="/${E(c.slug)}">${E(c.name)}</a>`).join("")}<a href="/best">${E(BEST_LABEL())} →</a></div></div>\n<div><h4>${E(AREA.many)}</h4><div class="fl">${HOODS_LIVE().slice(0, 6).map(h => `<a href="/${AREA.path}/${E(h.slug)}">${E(h.name)}</a>`).join("")}${HOODS_LIVE().length > 6 ? `<a href="/${AREA.paths}">See all →</a>` : ""}</div></div>\n<div><h4>For Businesses</h4><div class="fl"><a href="/add">List your business</a><a href="/claim">Claim a listing</a>\n<a href="/login">Log in</a><a href="/claim">Verification</a></div></div>\n<div><h4>Company</h4><div class="fl"><a href="/about">About</a><a href="/blog">Blog</a><a href="/news">News</a><a href="/contact">Contact us</a>${S.freeOnly ? "" : `<a href="/pricing">Pricing</a>`}<a href="/privacy">Privacy</a>\n<a href="/terms">Terms</a><a href="/photo-credits">Photo credits</a></div></div>\n</div><div class="fb">\n<span>Owned and Operated by Mianro Systems · © ${(new Date).getFullYear()} ${E(S.brand)}</span>\n<span>Made with <span style="color:${T.coral}">&#10084;</span> by <a href="https://mianrosystems.com" rel="noopener">Mianro Systems</a></span>\n</div></div></footer>`;
 
 // Site-wide top bar: the "#1 in {city}" claim (Eric, 8 Oct). City name comes from Variables, never hardcoded.
 const BRAG = () => AREA.byCity ? `${S.city}'s #1 ${TC(NOUNLO())} Directory` : `${S.city}'s #1 Local Business Directory`;
@@ -7720,7 +7732,7 @@ ${b.premium && b.photos && b.photos.length ? `<div class="blk"><h2>Photos</h2>\n
         const d = h2[k];
         return `<div class="r" data-hours-day="${k}"><span>${label}</span><span>${d ? fmtHM(d.o) + " – " + fmtHM(d.c) : "Closed"}</span></div>`;
       }).join("")}\n</div>\n<script>(function(){\nvar H=${SJ(h2)};\nvar parts=new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",weekday:"short",hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(new Date());\nvar wd={Mon:"mon",Tue:"tue",Wed:"wed",Thu:"thu",Fri:"fri",Sat:"sat",Sun:"sun"};\nvar day="",hh=0,mm=0;\nparts.forEach(function(p){if(p.type==="weekday")day=wd[p.value];if(p.type==="hour")hh=parseInt(p.value,10)%24;if(p.type==="minute")mm=parseInt(p.value,10)});\nvar nowMin=hh*60+mm;\nfunction toMin(v){var b=v.split(":");return parseInt(b[0],10)*60+parseInt(b[1],10)}\nvar order=["mon","tue","wed","thu","fri","sat","sun"];\nvar todayIdx=order.indexOf(day),open=false;\n[day,order[(todayIdx+6)%7]].forEach(function(dk,i){ // today, then yesterday (for spans past midnight)\n  var d=H[dk];if(!d)return;\n  var o=toMin(d.o),c=toMin(d.c),t=i===0?nowMin:nowMin+1440;\n  if(c<=o)c+=1440; // overnight hours (e.g. open 6pm, close 2am)\n  if(t>=o&&t<c)open=true});\ndocument.querySelectorAll("[data-open-badge],#glOpenBadge").forEach(function(b){b.textContent=open?"Open now":"Closed now";\n  b.style.background=open?"#E6F4EA":"#FDECEA";b.style.color=open?"#1E7E34":"#B3261E"});\nvar row=document.querySelector('[data-hours-day="'+day+'"]');\nif(row)row.style.fontWeight="700"\n})();<\/script>`;
-    })()}\n${b.owner_email ? `<div class="blk" id="enquiry"><h2>Send an enquiry</h2>\n<form method="POST" action="/api/lead">\n<input type="hidden" name="business" value="${E(b.name)}">\n<input type="hidden" name="ghlId" value="${E(b.id)}">\n<div class="fld2"><label for="qn">Your name *</label><input id="qn" name="name" required></div>\n<div class="fld2"><label for="qe">Your email *</label><input id="qe" name="email" type="email" required></div>\n<div class="fld2"><label for="qp">Your phone</label><input id="qp" name="phone" type="tel"></div>\n<div class="fld2"><label for="qd">What do you need?</label><textarea id="qd" name="details" placeholder="Tell them a bit about what you're looking for"></textarea></div>\n<button class="btn btn-p btn-w">Send enquiry</button>\n<p style="font-size:11px;color:${T.faint};text-align:center;margin:9px 0 0">${b.owner_email ? "Sent directly to the business." : "Our local team will pass your message on to the business."}</p>\n</form></div>` : LN2CONTACT(b)}\n</aside></div>\n${x.rank ? "" : x.bestCta || ""}
+    })()}\n${b.owner_email ? `<div class="blk" id="enquiry"><h2>Send an enquiry</h2>\n<form method="POST" action="/api/lead">\n<input type="hidden" name="business" value="${E(b.name)}">\n<input type="hidden" name="ghlId" value="${E(b.id)}">\n<div class="fld2"><label for="qn">Your name *</label><input id="qn" name="name" required></div>\n<div class="fld2"><label for="qe">Your email *</label><input id="qe" name="email" type="email" required></div>\n<div class="fld2"><label for="qp">Your phone</label><input id="qp" name="phone" type="tel"></div>\n<div class="fld2"><label for="qd">What do you need?</label><textarea id="qd" name="details" placeholder="Tell them a bit about what you're looking for"></textarea></div>\n<button class="btn btn-p btn-w">Send enquiry</button>\n<p style="font-size:11px;color:${T.faint};text-align:center;margin:9px 0 0">${b.owner_email ? "Sent directly to the business." : "Our local team will pass your message on to the business."}</p>\n</form></div>` : LN2CONTACT(b)}\n<p style="font-size:13px;margin:12px 4px 0"><a rel="nofollow" href="/contact?topic=listing&amp;page=${encodeURIComponent("/" + b.cs + "/" + b.slug)}" style="color:${T.coral};font-weight:700">🚩 Report a problem with this listing →</a></p>\n</aside></div>\n${x.rank ? "" : x.bestCta || ""}
 ${!b.premium && rel.length ? `<div class="blk ln2-simblk"><h2>${E(x.simTitle || "Similar businesses nearby")}</h2>\n<div class="ln2-sim">${rel.map(SIMROW).join("")}</div></div>` : ""}\n${x.isOwner ? `<div style="text-align:center;margin-top:26px;padding-top:22px;border-top:1px solid ${T.line}">
 <a class="btn btn-p btn-lg" href="/manage/hub?id=${encodeURIComponent(b.id)}">Manage your business</a>
 </div>` : ""}
@@ -8710,6 +8722,62 @@ const UPGRADE = (d, b, pay, err) => {
   });
 };
 
+// v17.02 (Eric, 13 Nov: "Build it" after a visitor couldn't find any way to reach us) — /contact. Messages go to the
+// CRM (contact tagged contact-form + "contact: <topic>", message as a note) and by email to the "contact" list;
+// "a listing is wrong or closed" goes to the edge-case list. Same spam protection as sign-up: hidden field, Tor
+// refused, per-visitor and site-wide hourly caps.
+const CONTACT_TOPICS = () => [ [ "listing", "A listing is wrong or closed" ], [ "owner", "I own a business" ], ...S.freeOnly ? [] : [ [ "ads", "Advertising" ] ], [ "press", "Press & partnerships" ], [ "other", "Something else" ] ];
+const CONTACT_PER_IP = 3, CONTACT_PER_HOUR = 40;
+
+const CONTACTPAGE = (d, x) => {
+  x = x || {};
+  const v = x.v || {}, topic = CONTACT_TOPICS().some(t => t[0] === v.topic) ? v.topic : "";
+  const card = x.sent ? `<div class="ct-card ct-done"><div class="ct-tick">✓</div><h2>Thanks, ${E(x.sent.first)}. We've got your message.</h2><p>We'll reply to ${E(x.sent.email)}, usually within one business day.</p><a class="btn btn-p" href="/">Back to the directory</a></div>` : `<form class="ct-card" method="POST" action="/contact">
+${x.err ? `<div class="note note-err" style="margin-bottom:14px">${E(x.err)}</div>` : ""}
+<fieldset class="ct-topics"><legend>What's this about?</legend>${CONTACT_TOPICS().map(([k, l]) => `<label><input type="radio" name="topic" value="${k}"${topic === k ? " checked" : ""} required><span>${E(l)}</span></label>`).join("")}</fieldset>
+<div class="ct-2"><div class="fld2"><label for="ctn">Your name *</label><input id="ctn" name="name" required maxlength="80" value="${E(v.name || "")}"></div>
+<div class="fld2"><label for="cte">Your email *</label><input id="cte" name="email" type="email" required maxlength="120" value="${E(v.email || "")}"></div></div>
+<div class="ct-2"><div class="fld2"><label for="ctp">Phone (optional)</label><input id="ctp" name="phone" type="tel" maxlength="30" value="${E(v.phone || "")}"></div>
+<div class="fld2"><label for="ctb">Business or page (optional)</label><input id="ctb" name="page" maxlength="200" placeholder="Paste a link or business name" value="${E(v.page || "")}"></div></div>
+<div class="fld2"><label for="ctm">Message *</label><textarea id="ctm" name="message" rows="5" required maxlength="3000" placeholder="How can we help?">${E(v.message || "")}</textarea></div>
+<div class="ct-hp" aria-hidden="true"><label>Website <input name="website" tabindex="-1" autocomplete="off"></label></div>
+<button class="btn btn-p btn-w">Send message</button>
+<p class="ct-fine">🔒 We only use your details to reply. Never shown on the site.</p>
+</form>`;
+  return PAGE(d, {
+    title: `Contact us | ${S.brand}`,
+    desc: `Contact the ${S.brand} team: questions, a listing that needs fixing, or advertising. We usually reply within one business day.`,
+    can: S.dom + "/contact",
+    ld: [ { "@context": "https://schema.org", "@type": "ContactPage", name: `Contact ${S.brand}`, url: S.dom + "/contact" }, { "@context": "https://schema.org", "@type": "BreadcrumbList", itemListElement: [ { "@type": "ListItem", position: 1, name: "Home", item: S.dom + "/" }, { "@type": "ListItem", position: 2, name: "Contact us", item: S.dom + "/contact" } ] } ],
+    body: `<style>
+.ct-wrap{max-width:1080px;padding-bottom:50px}.ct-lead{color:${T.muted};font-size:15.5px;max-width:640px;margin:0 0 22px;line-height:1.5}
+.ct-grid{display:grid;grid-template-columns:1.35fr 1fr;gap:22px;align-items:start}
+.ct-card{background:#fff;border:1px solid ${T.line};border-radius:18px;padding:22px;box-shadow:0 14px 34px rgba(18,38,63,.08)}
+.ct-topics{border:0;margin:0 0 14px;padding:0;display:flex;flex-wrap:wrap;gap:8px}.ct-topics legend{font-size:13px;font-weight:700;margin-bottom:8px;padding:0}
+.ct-topics label{cursor:pointer}.ct-topics input{position:absolute;opacity:0;width:1px;height:1px}
+.ct-topics span{display:inline-block;border:2px solid ${T.line};border-radius:999px;padding:7px 12px;font-size:13px;font-weight:700;color:${T.body};background:#fff}
+.ct-topics input:checked+span{border-color:${T.coral};background:#FFF2EC;color:${T.navy}}.ct-topics input:focus-visible+span{outline:2px solid ${T.navy};outline-offset:2px}
+.ct-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.ct-hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+.ct-fine{font-size:12px;color:${T.faint};text-align:center;margin:10px 0 0}
+.ct-qs h2{font-size:19px;margin-bottom:10px}.ct-qs a{display:flex;gap:12px;padding:13px 0;border-top:1px solid ${T.line};color:inherit}.ct-qs a:first-of-type{border-top:0}
+.ct-qs i{font-style:normal;width:36px;height:36px;border-radius:10px;background:#FFF2EC;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.ct-qs b{display:block;font-size:14px;color:${T.navy}}.ct-qs span{font-size:12.5px;color:${T.faint}}
+.ct-done{text-align:center;padding:34px 22px}.ct-done h2{font-size:22px;margin:0 0 6px}.ct-done p{color:${T.muted};margin:0 0 16px}
+.ct-tick{width:54px;height:54px;border-radius:50%;background:#E4F1F1;color:#2E8B8B;font-size:28px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px}
+@media(max-width:760px){.ct-grid,.ct-2{grid-template-columns:1fr}}
+</style><div class="wrap ct-wrap"><nav class="crumb"><a href="/">Home</a> / Contact us</nav>
+<h1 style="margin:14px 0 8px">Contact us</h1>
+<p class="ct-lead">Questions, a listing that needs fixing, or interested in advertising? Send us a message and the ${E(S.brand)} team will reply by email, usually within one business day.</p>
+<div class="ct-grid">${card}
+<div class="ct-card ct-qs"><h2>Quicker ways to get it done</h2>
+<a href="/add"><i>🏪</i><div><b>Add your business, free</b><span>Live as soon as the owner confirms email and phone.</span></div></a>
+<a href="/claim"><i>✅</i><div><b>Claim and edit your listing</b><span>Update hours, photos and details yourself.</span></div></a>
+${S.freeOnly ? "" : `<a href="/pricing"><i>⭐</i><div><b>Stand out with a featured listing</b><span>See plans and pricing.</span></div></a>`}
+<a href="/contact?topic=listing"><i>🚩</i><div><b>Report a listing</b><span>Closed, wrong details or a duplicate? Use "Report a problem" on the listing page.</span></div></a>
+</div></div></div>`
+  });
+};
+
 const ABOUT = d => PAGE(d, {
   title: SEOTXT("about", `About | ${S.brand}`, `Who runs ${S.brand}, where our listing data comes from, what our badges mean, and how to reach us.`).title,
   desc: SEOTXT("about", `About | ${S.brand}`, `Who runs ${S.brand}, where our listing data comes from, what our badges mean, and how to reach us.`).desc,
@@ -9505,7 +9573,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.01-shared";
+const BUILD = "v17.02-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -13978,7 +14046,7 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         subM[r.cs + "|" + SLUG(r.sub)] = Math.max(subM[r.cs + "|" + SLUG(r.sub)] || 0, r.m || 0);
         subN[r.cs + "|" + SLUG(r.sub)] = (subN[r.cs + "|" + SLUG(r.sub)] || 0) + (r.n || 0);
       }
-      const us = [ "/", "/add", "/claim", "/categories", "/" + AREA.paths, "/claimed", "/about", ...S.freeOnly ? [] : [ "/pricing" ], "/privacy", "/terms", "/blog", "/news", ...d.cats.flatMap(c => [ [ `/${c.slug}`, csM[c.slug] ], ...(c.subs || []).filter(s => (subN[c.slug + "|" + SLUG(s.name)] || 0) >= THIN_SUB).map(s => [ `/${c.slug}/${SLUG(s.name)}`, subM[c.slug + "|" + SLUG(s.name)] ]) ]), ...posts.map(p => [ `/blog/${p.slug}`, p.m ]) ];
+      const us = [ "/", "/add", "/claim", "/categories", "/" + AREA.paths, "/claimed", "/about", "/contact", ...S.freeOnly ? [] : [ "/pricing" ], "/privacy", "/terms", "/blog", "/news", ...d.cats.flatMap(c => [ [ `/${c.slug}`, csM[c.slug] ], ...(c.subs || []).filter(s => (subN[c.slug + "|" + SLUG(s.name)] || 0) >= THIN_SUB).map(s => [ `/${c.slug}/${SLUG(s.name)}`, subM[c.slug + "|" + SLUG(s.name)] ]) ]), ...posts.map(p => [ `/blog/${p.slug}`, p.m ]) ];
       return XMLRESP(XMLURLSET(us));
     }
     if (u.pathname === "/sitemap-locations.xml") {
@@ -14838,6 +14906,39 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
       return R(ALLCATS(d, allCatFaqs));
     }
     if (p[0] === "about") return R(ABOUT(d));
+    if (p[0] === "contact" && !p[1]) {
+      if (req.method !== "POST") {
+        const q = u.searchParams;
+        return R(CONTACTPAGE(d, { v: { topic: q.get("topic") || "", page: (q.get("page") || "").slice(0, 200) } }));
+      }
+      const f = await req.formData().catch(() => null);
+      const g = k => String(f && f.get(k) || "").trim();
+      const v = { topic: g("topic"), name: g("name").slice(0, 80), email: NRM(g("email")).slice(0, 120), phone: g("phone").slice(0, 30), page: g("page").slice(0, 200), message: g("message").slice(0, 3000) };
+      // Bots fill the hidden field: show the thank-you, send nothing.
+      if (g("website")) return R(CONTACTPAGE(d, { sent: { first: (v.name.split(/\s+/)[0] || "there"), email: v.email } }));
+      const tp = CONTACT_TOPICS().find(t => t[0] === v.topic);
+      let err = "";
+      if (!tp) err = "Please choose what your message is about."; else if (!v.name) err = "Please add your name."; else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v.email)) err = "Please check your email address."; else if (v.message.length < 5) err = "Please write a short message.";
+      if (err) return R2(CONTACTPAGE(d, { v, err }), 400);
+      const ip = req.headers.get("cf-connecting-ip") || "0";
+      if (!await rateOk(env, "contact:" + ip, CONTACT_PER_IP) || !await rateOk(env, "contact-all:" + new Date().toISOString().slice(0, 13), CONTACT_PER_HOUR)) return R2(CONTACTPAGE(d, { v, err: "We've had a lot of messages in the last hour. Please try again a little later." }), 429);
+      const label = tp[1], page = v.page ? (/^\//.test(v.page) ? S.dom + v.page : v.page) : "-";
+      const work = (async () => {
+        let cid = null;
+        if (env.GHL_API_TOKEN && env.GHL_LOCATION_ID) try {
+          cid = await ghlFindOrCreateContact(env, v.email, { name: v.name, phone: v.phone || undefined, noBiz: true, tags: [ "contact-form" ], source: "Goes Local contact form" });
+          if (cid) {
+            await ghlAddTag(env, cid, [ "contact-form", "contact: " + v.topic ]);
+            await ghlNote(env, cid, `Contact form (${S.brand}) — ${label}\nBusiness or page: ${page}\n\n${v.message}`);
+          }
+        } catch (e) {
+          console.log("contact form CRM write failed: " + e.message);
+        }
+        await notifyAdmins(env, DB, v.topic === "listing" ? "needs_dev" : "contact", "admin_contact_message", { topic: E(label), name: E(v.name), email: E(v.email), phone: E(v.phone || "-"), page: E(page), message: E(v.message) }, cid ? `${GHL_APP_URL}/v2/location/${env.GHL_LOCATION_ID}/contacts/detail/${cid}` : "");
+      })().catch(e => console.log("contact form failed: " + e.message));
+      ctx.waitUntil(work);
+      return R(CONTACTPAGE(d, { sent: { first: v.name.split(/\s+/)[0], email: v.email } }));
+    }
     if (p[0] === "pricing") return R(PRICING(d));
     if (p[0] === "privacy") return R(PRIVACY(d));
     if (p[0] === "terms") return R(TERMS(d));
@@ -15704,7 +15805,7 @@ function applyCityConfig(env) {
 
 const _base = _export;
 
-const EDGE_SKIP = /^\/(admin|debug|manage|account|login|signup|verify|code|auth|forgot|reset|logout|claim|add|join|owners|api|webhooks|sw\.js)(\/|$)/;
+const EDGE_SKIP = /^\/(admin|debug|manage|account|login|signup|verify|code|auth|forgot|reset|logout|claim|add|join|owners|contact|api|webhooks|sw\.js)(\/|$)/;
 
 const EDGE_KEEP = /^(batch|biz|cat|claim|edit|email|err|hood|id|link|main|next|ok|page|page_key|paid|plan|q|rating|ref|resent|rqerr|rqok|sent|sort|sub|t|tab|warn)$/;
 

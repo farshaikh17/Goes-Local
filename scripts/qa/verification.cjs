@@ -491,6 +491,17 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const order55 = [ ...box55.matchAll(/href="\/blog\/([a-z0-9-]+)"/g) ].map(m => m[1]);
   sql(`DELETE FROM posts WHERE slug LIKE 'qa-%-55'`);
   ok(/<h2>Related guides<\/h2>/.test(box55) && order55[0] === "qa-roofing-pick-55" && order55.length >= 3 && !order55.includes("qa-roof-cost-55"), "T55 Related guides: same-topic post first, box filled, never links to itself", order55.join(","));
+  // T56 Contact us: page + topic prefill from "Report a problem", message sent → thank-you, missing topic refused,
+  // bot field sends nothing, 3 messages per visitor per hour, footer + listing links, in the sitemap
+  const c56 = await F(BASE + "/contact?topic=listing&page=%2Fhome-services%2Fqa-one"), c56t = await c56.text();
+  const send56 = (ip, o) => F(BASE + "/contact", { method: "POST", headers: { "cf-connecting-ip": ip }, body: new URLSearchParams({ topic: "owner", name: "Casey Tester", email: "casey56@example.com", message: "Hello, QA message 56", ...o }) });
+  const ok56 = await (await send56("10.56.0.1", {})).text();
+  const bad56 = await send56("10.56.0.2", { topic: "" });
+  const bot56 = await (await send56("10.56.0.3", { website: "http://x" })).text();
+  const rl56 = [];
+  for (let i = 0; i < 4; i++) rl56.push((await send56("10.56.0.4", { message: "rate test " + i })).status);
+  const ab56 = await (await F(BASE + "/about")).text(), li56 = await (await F(BASE + "/home-services/qa-one")).text(), sm56 = await (await F(BASE + "/sitemap-categories.xml")).text();
+  ok(c56.status === 200 && /value="listing" checked/.test(c56t) && /value="\/home-services\/qa-one"/.test(c56t) && /Thanks, Casey\. We've got your message/.test(ok56) && bad56.status === 400 && /Thanks/.test(bot56) && rl56.join() === "200,200,200,429" && /href="\/contact"/.test(ab56) && /\/contact\?topic=listing&amp;page=%2Fhome-services%2Fqa-one/.test(li56) && /\/contact</.test(sm56), "T56 Contact us page: prefill, send, validation, bot trap, rate limit, links, sitemap", [ c56.status, bad56.status, rl56.join() ].join(" | "));
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
   const t41pg = await get("/claim/start?id=QA3");
