@@ -461,6 +461,25 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const col53 = sql(`SELECT COUNT(*) n FROM pragma_table_info('dup_hidden') WHERE name='ghl_tagged'`)[0].n;
   sql(`DELETE FROM area_hidden WHERE ghl_id='QA53'`);
   ok(a53.status === 200 && /out-of-area-listings\.csv/.test(a53.headers.get("content-disposition") || "") && /QA Vegas Spa.*NV/.test(a53t) && col53 === 1, "T53 out-of-area CSV lists hidden listings; dup_hidden.ghl_tagged exists", a53.status + " col=" + col53);
+  // T54 SEO audit (12 Nov): a post's own BlogPosting/BreadcrumbList replaces the automatic Article/BreadcrumbList (no
+  // doubles) and gets dateModified; team bylines are an Organization; thin sub-category pages are noindex and out of the
+  // sitemap; /login is noindex and out of the sitemap; robots.txt keeps AI bots out of /admin and has no Crawl-delay
+  const cs54 = JSON.stringify({ "@context": "https://schema.org", "@graph": [ { "@type": "BlogPosting", headline: "QA Post 54" }, { "@type": "BreadcrumbList", itemListElement: [] } ] }).replace(/'/g, "''");
+  sql(`INSERT INTO posts(slug,title,excerpt,body,author,published,created_at,updated_at,custom_schema,archived) VALUES('qa-post-54','QA Post 54','x','<p>Body</p>','QA Editor Team',1,1700000000000,1700000500000,'${cs54}',0)`);
+  sql(`INSERT INTO posts(slug,title,excerpt,body,author,published,created_at,updated_at,custom_schema,archived) VALUES('qa-post-54b','QA Post 54b','x','<p>Body</p>','QA Editor Team',1,1700000000000,1700000500000,'',0)`);
+  const b54 = await (await F(BASE + "/blog/qa-post-54")).text(), c54 = await (await F(BASE + "/blog/qa-post-54b")).text();
+  const lds = h => [ ...h.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g) ].map(m => m[1]).join(" ");
+  const l54 = lds(b54), m54 = lds(c54);
+  sql(`INSERT INTO businesses(ghl_id,city,cat,cs,sub,slug,name,addr,ph,email,web,claimed,owner_email,updated_at) VALUES('QA54','Tampa','Home Services','home-services','Pond fish supplier','qa-pond-54','QA Pond 54','54 St','','','',0,NULL,1)`);
+  await F(BASE + "/admin/hero/video", { method: "POST", redirect: "manual", headers: { cookie: ck47 }, body: new URLSearchParams({ id: "0", video: "x" }) });
+  const t54r = await F(BASE + "/home-services/pond-fish-supplier"), t54 = await t54r.text();
+  const p54 = await (await F(BASE + "/home-services/plumber")).text();
+  const sm54 = await (await F(BASE + "/sitemap-categories.xml")).text();
+  const lg54 = await F(BASE + "/login");
+  const rb54 = await (await F(BASE + "/robots.txt")).text();
+  sql(`DELETE FROM posts WHERE slug IN ('qa-post-54','qa-post-54b')`);
+  sql(`DELETE FROM businesses WHERE ghl_id='QA54'`);
+  ok(!/"@type":"Article"/.test(l54) && (l54.match(/BreadcrumbList/g) || []).length === 1 && /"dateModified":"2023/.test(l54) && /"@type":"Article"/.test(m54) && /"author":\{"@type":"Organization","name":"QA Editor Team"/.test(m54) && t54r.status === 200 && /name="robots" content="noindex, follow"/.test(t54) && !/name="robots"/.test(p54) && !/pond-fish-supplier</.test(sm54) && /home-services\/plumber</.test(sm54) && !/\/login</.test(sm54) && /noindex/.test(lg54.headers.get("x-robots-tag") || "") && !/Crawl-delay/.test(rb54) && /User-agent: GPTBot[\s\S]*?Disallow: \/admin\n/.test(rb54), "T54 SEO: post schema not doubled (+dateModified), team author = Organization, thin sub-category noindex + not in sitemap, /login noindex, robots", [ (l54.match(/BreadcrumbList/g) || []).length, /"@type":"Article"/.test(l54), /"dateModified":"2023/.test(l54), /"@type":"Article"/.test(m54), /Organization","name":"QA Editor/.test(m54), t54r.status, /noindex/.test(t54), /name="robots"/.test(p54), /pond-fish-supplier</.test(sm54), /plumber</.test(sm54), /\/login</.test(sm54), lg54.headers.get("x-robots-tag"), /Crawl-delay/.test(rb54), /User-agent: GPTBot[\s\S]*?Disallow: \/admin\n/.test(rb54) ].join(" | "));
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
   const t41pg = await get("/claim/start?id=QA3");

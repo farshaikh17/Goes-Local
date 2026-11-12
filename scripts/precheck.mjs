@@ -11,6 +11,10 @@ const fail = m => { console.error("✗ " + m); bad++; };
 
 try { execFileSync(process.execPath, ["--check", file], { stdio: "pipe" }); }
 catch (e) { fail("node --check failed:\n" + e.stderr); }
+// node --check treats the file as a script and misses module-level mistakes (v17.00: a duplicate `const res` passed it
+// and only failed in Wrangler's build). Bundle it the way Wrangler does.
+try { execFileSync(new URL("../node_modules/.bin/esbuild", import.meta.url).pathname, [file, "--bundle", "--format=esm", "--platform=neutral", "--outfile=/dev/null", "--log-level=error"], { stdio: "pipe" }); }
+catch (e) { fail("esbuild (same build Wrangler runs) failed:\n" + (e.stderr || e.message)); }
 
 const seen = {};
 for (const m of src.matchAll(/if \((p\[1\] === "[a-z0-9-]+"|u\.pathname === "\/[^"]*")\)/g)) seen[m[1]] = (seen[m[1]] || 0) + 1;
