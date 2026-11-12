@@ -1300,6 +1300,12 @@ function norm(c, m) {
   const subField = P(v, "subcategory", "sub category", "secondary category");
   const override = CATMAP.d[SL(subField || "")] || CATMAP.d[SL(rawSub || "")];
   let cat = override || (rawSub === "Other" || allMains().includes(rawSub) ? rawSub : mainOf(rawSub));
+  // v16.99: Lead Category that isn't one of the site's categories ("Professional & Business Services" from a data file)
+  // lands in Other; the sub-category ("Tax preparation service") then decides if it maps somewhere.
+  if (!override && cat === "Other" && rawSub !== "Other" && subField) {
+    const bySub = mainOf(subField);
+    if (bySub !== "Other") cat = bySub;
+  }
   if (!rawSub && !override) {
     const tagCat = allMains().find(m => (c.tags || []).some(t => String(t).trim().toLowerCase() === m.toLowerCase())) || ((c.tags || []).some(t => String(t).trim().toLowerCase() === "other") ? "Other" : "");
     if (tagCat) cat = tagCat;
@@ -1850,6 +1856,14 @@ async function migrate(DB, env) {
     await DB.prepare("CREATE TABLE IF NOT EXISTS dup_hidden(ghl_id TEXT PRIMARY KEY, keep_id TEXT NOT NULL, cs TEXT, slug TEXT, name TEXT DEFAULT '', created_at INTEGER)").run();
     await DB.prepare("CREATE TABLE IF NOT EXISTS lead_cat_fix(ghl_id TEXT PRIMARY KEY, cat TEXT NOT NULL, created_at INTEGER)").run();
     await DB.prepare("CREATE TABLE IF NOT EXISTS competitor_hidden(ghl_id TEXT PRIMARY KEY, name TEXT DEFAULT '', cs TEXT, slug TEXT, sub TEXT DEFAULT '', created_at INTEGER)").run();
+    // v16.99: listings whose address is in another US state (Eric, 12 Nov: hide from the site, leave the CRM alone), or in Canada.
+    try {
+      await DB.prepare("CREATE TABLE IF NOT EXISTS area_hidden(ghl_id TEXT PRIMARY KEY, name TEXT DEFAULT '', addr TEXT DEFAULT '', st TEXT DEFAULT '', created_at INTEGER)").run();
+    } catch {}
+    // v16.99: hidden duplicate copies get the CRM tag "duplicate" (0 = not yet, 1 = tagged, 2 = contact gone).
+    try {
+      await DB.prepare("ALTER TABLE dup_hidden ADD COLUMN ghl_tagged INTEGER DEFAULT 0").run();
+    } catch {}
     await DB.prepare("CREATE TABLE IF NOT EXISTS business_team(ghl_id TEXT NOT NULL, email TEXT NOT NULL, added_by TEXT DEFAULT '', added_at INTEGER, PRIMARY KEY(ghl_id, email))").run();
   } catch {}
   try {
@@ -2378,16 +2392,18 @@ async function syncStep(env, DB, maxPages) {
       }
       let pageList = page.contacts.filter(c => (c.tags || []).some(t => String(t).toLowerCase() === S.tag) && !isPerson(c)).map(c => norm(c, m));
       if (dupHidden.size) {
-        const unhide = [];
+        const unhide = [], unTag = [];
         pageList = pageList.filter(b => {
           const h = dupHidden.get(b.id);
           if (!h) return true;
           if (!(b.claimed || b.premium || b.plus)) return false;
           dupHidden.delete(b.id);
+          unTag.push(b.id);
           unhide.push(DB.prepare("DELETE FROM dup_hidden WHERE ghl_id=?1").bind(b.id), DB.prepare("DELETE FROM slug_redirects WHERE cs=?1 AND old_slug=?2 AND ghl_id=?3").bind(h.cs, h.slug, h.keep_id));
           return true;
         });
         if (unhide.length) await DB.batch(unhide);
+        for (const id of unTag.slice(0, 10)) await ghlRemoveTag(env, id, [ "duplicate" ]);
       }
       try {
         // GHL's Lead Category is brought in line with the category the site settled on (sub-category map first), a few
@@ -2406,6 +2422,14 @@ async function syncStep(env, DB, maxPages) {
           await DB.batch(comp.flatMap(b => [ DB.prepare("INSERT OR REPLACE INTO competitor_hidden(ghl_id,name,cs,slug,sub,created_at) VALUES(?1,?2,?3,?4,?5,?6)").bind(b.id, b.name || "", b.cs, b.slug || "", b.sub || "", Date.now()), DB.prepare("DELETE FROM businesses WHERE ghl_id=?1").bind(b.id) ])).catch(e => console.log("sync: competitor hide failed: " + e.message));
         }
         if (pageList.length) await DB.prepare(`DELETE FROM competitor_hidden WHERE ghl_id IN (${pageList.map((_, i) => "?" + (i + 1)).join(",")})`).bind(...pageList.map(b => b.id)).run().catch(() => {});
+      }
+      {
+        const away = pageList.filter(OUTAREA);
+        if (away.length) {
+          pageList = pageList.filter(b => !away.includes(b));
+          await DB.batch(away.flatMap(b => [ DB.prepare("INSERT OR REPLACE INTO area_hidden(ghl_id,name,addr,st,created_at) VALUES(?1,?2,?3,?4,?5)").bind(b.id, b.name || "", b.addr || "", addrState(b.addr), Date.now()), DB.prepare("DELETE FROM businesses WHERE ghl_id=?1").bind(b.id) ])).catch(e => console.log("sync: out-of-area hide failed: " + e.message));
+        }
+        if (pageList.length) await DB.prepare(`DELETE FROM area_hidden WHERE ghl_id IN (${pageList.map((_, i) => "?" + (i + 1)).join(",")})`).bind(...pageList.map(b => b.id)).run().catch(() => {});
       }
       for (const b of pageList) {
         const prior = priorByGhlId.get(b.id);
@@ -3615,7 +3639,7 @@ const contentItems = [ [ "/admin/comments", "Comments" ], [ "/admin/hero", "Home
 
 const seoItems = [ [ "/admin/seo", "SEO" ], [ "/admin/blog", "Blog" ], [ "/admin/news", "News" ], [ "/admin/faqs", "Category FAQs" ], [ "/admin/hoodfaqs", "Neighbourhood FAQs" ] ];
 
-const adminOnlyItems = [ [ "/admin/status", "Status" ], [ "/admin/import", "Import businesses" ], [ "/admin/sync", "Run sync" ], [ "/admin/urlsync", "Listing URL sync" ], [ "/admin/emailtemplates", "Email templates & test" ], [ "/admin/migrate", "Migrate" ], [ "/admin/duplicates", "Hide duplicates" ], [ "/admin/duplicates?csv=1", "Duplicates list (CSV)" ], [ "/debug", "Debug" ] ];
+const adminOnlyItems = [ [ "/admin/status", "Status" ], [ "/admin/import", "Import businesses" ], [ "/admin/sync", "Run sync" ], [ "/admin/urlsync", "Listing URL sync" ], [ "/admin/emailtemplates", "Email templates & test" ], [ "/admin/migrate", "Migrate" ], [ "/admin/duplicates", "Hide duplicates" ], [ "/admin/duplicates?csv=1", "Duplicates list (CSV)" ], [ "/admin/duplicates?area=1", "Out-of-area listings (CSV)" ], [ "/debug", "Debug" ] ];
 
 const IMG_AUTOCOMPRESS_JS = `document.addEventListener("DOMContentLoaded",function(){\nfunction compress(file){\nreturn new Promise(function(resolve){\nif(!file||!/^image\\/(jpeg|png|webp)$/.test(file.type)||file.size<400000){resolve(file);return}\nvar img=new Image();\nvar url=URL.createObjectURL(file);\nimg.onload=function(){\nURL.revokeObjectURL(url);\nvar maxDim=1920;\nvar w=img.width,h=img.height;\nif(w>maxDim||h>maxDim){\nif(w>h){h=Math.round(h*maxDim/w);w=maxDim}else{w=Math.round(w*maxDim/h);h=maxDim}\n}\nvar canvas=document.createElement("canvas");\ncanvas.width=w;canvas.height=h;\nvar ctx=canvas.getContext("2d");\nctx.drawImage(img,0,0,w,h);\ncanvas.toBlob(function(blob){\nif(!blob||blob.size>=file.size){resolve(file);return}\nresolve(new File([blob],file.name.replace(/\\.(png|jpe?g|webp)$/i,"")+".jpg",{type:"image/jpeg"}))\n},"image/jpeg",0.82)\n};\nimg.onerror=function(){URL.revokeObjectURL(url);resolve(file)};\nimg.src=url\n})\n}\ndocument.querySelectorAll('input[type="file"][accept*="image"]').forEach(function(input){\ninput.addEventListener("change",function(){\nvar file=input.files&&input.files[0];\nif(!file)return;\ncompress(file).then(function(out){\nif(out===file)return;\ntry{\nvar dt=new DataTransfer();\ndt.items.add(out);\ninput.files=dt.files\n}catch(e){}\n})\n})\n});\n});`;
 const ADMINNAV = (path, role) => {
@@ -3787,6 +3811,42 @@ async function ghlSetPassword(env, contactId, password) {
 
 // Writes the corrected main category into GHL's Lead Category (custom field only), oldest first. meta leadcat_pause=1
 // stops it without a deploy.
+// v16.99 — hidden duplicate copies are tagged "duplicate" in the CRM (Eric, 12 Nov: tag, don't delete), so sales can
+// filter them out. Bulk tag call first; one at a time if that is refused. A contact that is gone is marked 2, not retried.
+async function dupTagBatch(env, DB, max) {
+  const rows = (await DB.prepare("SELECT ghl_id FROM dup_hidden WHERE coalesce(ghl_tagged,0)=0 LIMIT ?1").bind(max).all()).results || [];
+  if (!rows.length) return { done: 0, left: 0 };
+  const ids = rows.map(r => r.ghl_id), mark = (v, list) => list.length ? DB.batch(list.map(id => DB.prepare("UPDATE dup_hidden SET ghl_tagged=?1 WHERE ghl_id=?2").bind(v, id))) : null;
+  let done = 0;
+  try {
+    const r = await fetch(`${API}/contacts/bulk/tags/update/add`, { method: "POST", headers: { ...H(env), "Content-Type": "application/json" }, body: JSON.stringify({ contacts: ids, tags: [ "duplicate" ], locationId: env.GHL_LOCATION_ID }) });
+    const j = r.ok ? await r.json().catch(() => ({})) : null;
+    if (r.ok && !(j && j.errorCount)) {
+      await mark(1, ids);
+      done = ids.length;
+    } else console.log("dupTagBatch bulk " + r.status + ": " + JSON.stringify(j || {}).slice(0, 200));
+  } catch (e) {
+    console.log("dupTagBatch bulk failed: " + e.message);
+  }
+  if (!done) {
+    const ok = [], gone = [];
+    for (const id of ids.slice(0, 20)) {
+      if (await ghlAddTag(env, id, [ "duplicate" ])) {
+        ok.push(id);
+        continue;
+      }
+      // Only a contact the CRM says doesn't exist (404/400) is "gone"; a CRM outage or bad token (401/5xx) is retried later.
+      const g = await fetch(`${API}/contacts/${id}`, { headers: H(env) }).then(r => r.status).catch(() => 0);
+      if (g === 404 || g === 400) gone.push(id); else if (g !== 200) break;
+    }
+    await mark(1, ok);
+    await mark(2, gone);
+    done = ok.length;
+  }
+  const left = await DB.prepare("SELECT COUNT(*) n FROM dup_hidden WHERE coalesce(ghl_tagged,0)=0").first();
+  return { done, left: left ? left.n : 0 };
+}
+
 async function leadCatBatch(env, DB, maxUpdates) {
   if (await DB.prepare("SELECT 1 FROM meta WHERE k='leadcat_pause' AND v='1'").first().catch(() => null)) return { done: 0, left: -1, paused: true };
   const fid = fieldId(await fields(env), "lead category");
@@ -4338,6 +4398,21 @@ async function bizContactFor(env, email) {
 // the directory (Eric, 28 Oct). A contact tagged "not-competitor" always stays, and a paying listing is never hidden.
 const COMPETE_SUB = /\b(marketing|market researcher|advertising agency|website designer|web designer|web design|web development|website development|seo|search engine|social media|digital agency|public relations|pr firm|software company|branding agency)\b/i;
 const COMPETE_NAME = /\b(marketing|seo|web ?design|websites?|digital agency|media agency)\b/i;
+// v16.99 — an address that ends in another US state's code ("…, Las Vegas, NV 89118") is outside this site's area.
+// Compared with the city's own CITY_STATE (S.st), so nothing city-specific here. Claimed/paid listings always stay.
+const US_STATES = new Set("AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY AB BC MB NB NL NS NT NU ON PE QC SK YT".split(" ")); // US states + DC, and Canadian provinces
+
+function addrState(addr) {
+  const a = String(addr || "").trim().replace(/,?\s*(USA|US|United States(?: of America)?)\.?$/i, "");
+  const m = a.match(/,\s*([A-Z]{2})(?:\s*,)?\s*(?:\d{5}(?:-\d{4})?)?$/);
+  return m && US_STATES.has(m[1]) ? m[1] : "";
+}
+
+const OUTAREA = b => {
+  const home = String(S.st || "").toUpperCase(), st = addrState(b.addr);
+  return !!(home && st && st !== home && !(b.claimed || b.premium || b.plus));
+};
+
 const COMPETITOR = (b, tags) => {
   if ((tags || []).some(t => String(t).trim().toLowerCase() === "not-competitor") || b.premium || b.plus) return false;
   return /^marketing\b/i.test(b.cat || "") || COMPETE_SUB.test(b.sub || "") || COMPETE_NAME.test(b.name || "");
@@ -9343,7 +9418,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v16.98-shared";
+const BUILD = "v16.99-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -9417,6 +9492,12 @@ const _export = {
         if (gp.done) console.log(`cron: refreshed Google reviews for ${gp.done} listings, ${gp.left} left`);
       } catch (e) {
         console.log("cron google-reviews batch failed: " + e.message);
+      }
+      try {
+        const dt = await dupTagBatch(env, DB, 100);
+        if (dt.done) console.log(`cron: tagged ${dt.done} hidden duplicate copies "duplicate" in the CRM, ${dt.left} left`);
+      } catch (e) {
+        console.log("cron duplicate tag batch failed: " + e.message);
       }
       try {
         const lc = await leadCatBatch(env, DB, 40);
@@ -9768,6 +9849,11 @@ const _export = {
               "cache-control": "no-store"
             }
           });
+        }
+        if (u.searchParams.has("area")) {
+          const rows = (await DB.prepare("SELECT name,ghl_id,addr,st,created_at FROM area_hidden ORDER BY st,name").all()).results || [];
+          const q = v => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
+          return new Response("Business,CRM contact id,Address,State\n" + rows.map(r => [ r.name, r.ghl_id, r.addr, r.st ].map(q).join(",")).join("\n"), { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="out-of-area-listings.csv"', "cache-control": "no-store" } });
         }
         if (u.searchParams.has("csv")) {
           const rows = (await DB.prepare("SELECT h.name,h.ghl_id,h.cs,h.slug,h.keep_id,b.cs kcs,b.slug kslug FROM dup_hidden h LEFT JOIN businesses b ON b.ghl_id=h.keep_id ORDER BY h.name").all()).results || [];

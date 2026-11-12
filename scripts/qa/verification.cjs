@@ -454,6 +454,13 @@ const claim = (id, email, ip) => post("/api/claim", { id, email, name: "QA Perso
   const st52h = await st52.text();
   const bz52 = await F(BASE + "/neighbourhood/qa-never-cached-52", { headers: { "x-gl-test-fail": "1" } });
   ok(ok52.status === 200 && st52.status === 200 && st52.headers.get("x-gl-cache") === "STALE" && /<h1/.test(st52h) && bz52.status === 503 && bz52.headers.get("retry-after") === "60" && /a little busy/.test(await bz52.text()), "T52 page build fails → spare copy served, else 503 busy with Retry-After (no 500s)", [ ok52.status, st52.status, st52.headers.get("x-gl-cache"), bz52.status, bz52.headers.get("retry-after") ].join(" | "));
+  // T53 out-of-area listings list (Admin → Out-of-area CSV) and the duplicate-tag column exist after migrate
+  sql(`INSERT OR REPLACE INTO area_hidden(ghl_id,name,addr,st,created_at) VALUES('QA53','QA Vegas Spa','1 Strip, Las Vegas, NV, 89118','NV',1)`);
+  const a53 = await F(BASE + "/admin/duplicates?area=1", { headers: { cookie: ck47 } });
+  const a53t = await a53.text();
+  const col53 = sql(`SELECT COUNT(*) n FROM pragma_table_info('dup_hidden') WHERE name='ghl_tagged'`)[0].n;
+  sql(`DELETE FROM area_hidden WHERE ghl_id='QA53'`);
+  ok(a53.status === 200 && /out-of-area-listings\.csv/.test(a53.headers.get("content-disposition") || "") && /QA Vegas Spa.*NV/.test(a53t) && col53 === 1, "T53 out-of-area CSV lists hidden listings; dup_hidden.ghl_tagged exists", a53.status + " col=" + col53);
   // T41 Year established is required on the claim form, and the private-details box shows before the form
   const t41 = await post("/api/claim", { id: "QA3", email: "y41@example.com", name: "Y Person", role: "Owner", phone: "8135550141", details: "qa" }, "10.0.4.41");
   const t41pg = await get("/claim/start?id=QA3");
