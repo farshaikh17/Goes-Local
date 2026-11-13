@@ -2812,11 +2812,11 @@ async function mergePair(env, DB, copyId, keepId, dry) {
   const masterIsCopy = act(b) > act(a) || act(b) === act(a) && worked(b) && !worked(a);
   const master = masterIsCopy ? b : a, loser = masterIsCopy ? a : b;
   // Never delete a contact that has opportunities or appointments.
-  const [opp, appt] = await Promise.all([ ghlJson(env, `/opportunities/search?location_id=${env.GHL_LOCATION_ID}&contact_id=${loser.id}&limit=1`), ghlJson(env, `/contacts/${loser.id}/appointments`) ]);
+  const [opp, appt] = await Promise.all([ ghlJson(env, `/opportunities/search?locationId=${env.GHL_LOCATION_ID}&contactId=${loser.id}&limit=1&status=all`), ghlJson(env, `/contacts/${loser.id}/appointments`) ]);
   const nOpp = opp.ok && opp.j ? (opp.j.opportunities || []).length : -1, nAppt = appt.ok && appt.j ? (appt.j.events || []).length : -1;
   const name = master.companyName || [ master.firstName, master.lastName ].filter(Boolean).join(" ");
   const plan = { copyId, keepId, name, master: master.id, masterIs: masterIsCopy ? "the hidden copy (more recent activity or work)" : "the listing on the site", loser: loser.id, masterActivity: master.lastActivity || "", loserActivity: loser.lastActivity || "" };
-  if (nOpp !== 0 || nAppt !== 0) return { ...plan, status: "manual", reason: nOpp < 0 || nAppt < 0 ? "couldn't check opportunities/appointments" : `the contact to remove has ${nOpp} opportunit${nOpp === 1 ? "y" : "ies"} / ${nAppt} appointment(s)` };
+  if (nOpp !== 0 || nAppt !== 0) return { ...plan, status: "manual", reason: nOpp < 0 || nAppt < 0 ? `couldn't check opportunities (${opp.status}) / appointments (${appt.status})` : `the contact to remove has ${nOpp} opportunit${nOpp === 1 ? "y" : "ies"} / ${nAppt} appointment(s)` };
   const m = await fields(env);
   const notes = await ghlJson(env, `/contacts/${loser.id}/notes`);
   const noteList = notes.ok && notes.j ? notes.j.notes || [] : [];
@@ -9786,7 +9786,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.04-shared";
+const BUILD = "v17.05-shared";
 
 const APP_COOKIE = "gl_app";
 
