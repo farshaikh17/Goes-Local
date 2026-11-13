@@ -1860,6 +1860,10 @@ async function migrate(DB, env) {
     try {
       await DB.prepare("CREATE TABLE IF NOT EXISTS area_hidden(ghl_id TEXT PRIMARY KEY, name TEXT DEFAULT '', addr TEXT DEFAULT '', st TEXT DEFAULT '', created_at INTEGER)").run();
     } catch {}
+    // v17.04: one row per merged/left-alone duplicate pair, with a backup of the removed contact.
+    try {
+      await DB.prepare("CREATE TABLE IF NOT EXISTS merge_log(loser_id TEXT PRIMARY KEY, master_id TEXT, copy_id TEXT, keep_id TEXT, name TEXT DEFAULT '', contact_json TEXT DEFAULT '', notes_json TEXT DEFAULT '', transcript TEXT DEFAULT '', status TEXT, err TEXT DEFAULT '', at INTEGER)").run();
+    } catch {}
     // v16.99: hidden duplicate copies get the CRM tag "duplicate" (0 = not yet, 1 = tagged, 2 = contact gone).
     try {
       await DB.prepare("ALTER TABLE dup_hidden ADD COLUMN ghl_tagged INTEGER DEFAULT 0").run();
@@ -2741,6 +2745,164 @@ const SAMENAME = (a, b) => {
   const x = NAMEKEY(a), y = NAMEKEY(b);
   return !!x && !!y && (x === y || Math.min(x.length, y.length) >= 4 && (x.includes(y) || y.includes(x)));
 };
+
+// v17.04 — merge duplicate CRM contacts (Eric, 13 Nov: "merge all the duplicates into one … the data with the latest
+// knowledge or communication to be the master … for every account … remove the duplicate tags after merge").
+// Each dup_hidden pair (hidden copy + listing on the site) becomes one contact. GHL's API has no merge, so:
+//  - master = the contact with the most recent call/message/email (lastActivity); then one a rep has worked (not
+//    tagged "untouched"); then the listing on the site.
+//  - the other contact is backed up in merge_log (contact, notes, transcript), then its empty-on-master fields,
+//    tags, notes and assigned rep (if the master has none) go to the master — custom and native fields in separate
+//    calls; its calls/texts/emails can't be moved, so they are written into a transcript note (Eric: OK, 13 Nov).
+//  - a contact with opportunities or appointments is never deleted: the pair is left for a person (status "manual").
+//  - the other contact is deleted, then email/phone it held are set on the master (GHL allows one contact per email).
+//  - on the site the listing keeps its address: its row (and every ghl_id reference in D1) moves to the master.
+// /admin/merge previews (?dry=1) or runs a batch; meta merge_auto=1 lets the cron run batches too.
+const MERGE_BATCH = 8;
+
+async function ghlJson(env, path, init) {
+  const r = await fetch(API + path, { ...init || {}, headers: { ...H(env), "Content-Type": "application/json", ...(init && init.headers) || {} } });
+  let j = null;
+  try { j = await r.json(); } catch {}
+  return { ok: r.ok, status: r.status, j };
+}
+
+async function mergeTranscript(env, cid) {
+  const lines = [];
+  const convs = await ghlJson(env, `/conversations/search?locationId=${env.GHL_LOCATION_ID}&contactId=${cid}`);
+  if (!convs.ok) throw new Error("conversation search " + convs.status);
+  const users = {};
+  const who = async id => {
+    if (!id) return "";
+    if (users[id] === undefined) {
+      const u = await ghlJson(env, `/users/${id}`);
+      users[id] = u.ok && u.j ? u.j.name || "" : "";
+    }
+    return users[id];
+  };
+  for (const conv of (convs.j && convs.j.conversations || []).slice(0, 5)) {
+    let last = "", n = 0;
+    for (let page = 0; page < 5; page++) {
+      const r = await ghlJson(env, `/conversations/${conv.id}/messages?limit=100${last ? "&lastMessageId=" + last : ""}`);
+      if (!r.ok) throw new Error("messages " + r.status);
+      const box = r.j && r.j.messages || {};
+      for (const msg of box.messages || []) {
+        n++;
+        const kind = String(msg.messageType || "").replace(/^TYPE_/, "").toLowerCase() || "message";
+        const call = msg.meta && msg.meta.call;
+        const text = String(msg.body || "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim().slice(0, 1500);
+        const by = msg.direction === "outbound" ? await who(msg.userId) : "";
+        lines.push(`${String(msg.dateAdded || "").slice(0, 16).replace("T", " ")} · ${kind} · ${msg.direction || ""}${by ? " · " + by : ""}${call ? ` · ${call.status || msg.status || ""}${call.duration ? " " + call.duration + "s" : ""}` : msg.status && kind !== "email" ? " · " + msg.status : ""}${text ? ": " + text : ""}`);
+      }
+      if (!box.nextPage || !box.lastMessageId) break;
+      last = box.lastMessageId;
+    }
+  }
+  return lines;
+}
+
+async function mergePair(env, DB, copyId, keepId, dry) {
+  const [a, b] = await Promise.all([ ghlGetContact(env, keepId), ghlGetContact(env, copyId) ]);
+  if (!b) {
+    if (!dry) await DB.prepare("DELETE FROM dup_hidden WHERE ghl_id=?1").bind(copyId).run().catch(() => {});
+    return { copyId, keepId, status: "copy-gone" };
+  }
+  if (!a) return { copyId, keepId, status: "skip", reason: "the listing contact isn't in the CRM" };
+  const act = x => Date.parse(x.lastActivity || "") || 0, worked = x => !(x.tags || []).some(t => String(t).toLowerCase() === "untouched");
+  const masterIsCopy = act(b) > act(a) || act(b) === act(a) && worked(b) && !worked(a);
+  const master = masterIsCopy ? b : a, loser = masterIsCopy ? a : b;
+  // Never delete a contact that has opportunities or appointments.
+  const [opp, appt] = await Promise.all([ ghlJson(env, `/opportunities/search?location_id=${env.GHL_LOCATION_ID}&contact_id=${loser.id}&limit=1`), ghlJson(env, `/contacts/${loser.id}/appointments`) ]);
+  const nOpp = opp.ok && opp.j ? (opp.j.opportunities || []).length : -1, nAppt = appt.ok && appt.j ? (appt.j.events || []).length : -1;
+  const name = master.companyName || [ master.firstName, master.lastName ].filter(Boolean).join(" ");
+  const plan = { copyId, keepId, name, master: master.id, masterIs: masterIsCopy ? "the hidden copy (more recent activity or work)" : "the listing on the site", loser: loser.id, masterActivity: master.lastActivity || "", loserActivity: loser.lastActivity || "" };
+  if (nOpp !== 0 || nAppt !== 0) return { ...plan, status: "manual", reason: nOpp < 0 || nAppt < 0 ? "couldn't check opportunities/appointments" : `the contact to remove has ${nOpp} opportunit${nOpp === 1 ? "y" : "ies"} / ${nAppt} appointment(s)` };
+  const m = await fields(env);
+  const notes = await ghlJson(env, `/contacts/${loser.id}/notes`);
+  const noteList = notes.ok && notes.j ? notes.j.notes || [] : [];
+  const transcript = loser.lastActivity ? await mergeTranscript(env, loser.id) : [];
+  // Custom fields: fill what the master lacks; long note-like fields are joined; otherwise the master's value stays.
+  const mcf = new Map((master.customFields || []).map(f => [ f.id, f.value ]));
+  const has = v => v !== undefined && v !== null && String(Array.isArray(v) ? v.join("") : v).trim() !== "";
+  const cf = [];
+  for (const f of loser.customFields || []) {
+    if (!has(f.value)) continue;
+    const label = String(m[f.id] || "").toLowerCase();
+    if (!has(mcf.get(f.id))) cf.push({ id: f.id, value: f.value }); else if (/note/.test(label) && String(mcf.get(f.id)) !== String(f.value) && !String(mcf.get(f.id)).includes(String(f.value))) cf.push({ id: f.id, value: `${mcf.get(f.id)} ||| ${f.value}` });
+  }
+  const nat = {};
+  for (const k of [ "companyName", "firstName", "lastName", "website", "address1", "city", "state", "postalCode", "country" ]) if (!has(master[k]) && has(loser[k])) nat[k] = loser[k];
+  if (!master.assignedTo && loser.assignedTo) nat.assignedTo = loser.assignedTo;
+  const later = {};
+  if (!has(master.email) && has(loser.email)) later.email = loser.email;
+  if (!has(master.phone) && has(loser.phone)) later.phone = loser.phone;
+  const lowerTags = t => String(t).trim().toLowerCase();
+  const keepUntouched = (master.tags || []).map(lowerTags).includes("untouched") && (loser.tags || []).map(lowerTags).includes("untouched");
+  const addTags = [ ...new Set((loser.tags || []).filter(t => ![ "duplicate", "untouched" ].includes(lowerTags(t)) && !(master.tags || []).map(lowerTags).includes(lowerTags(t)))) ];
+  Object.assign(plan, { status: dry ? "preview" : "done", fieldsCopied: cf.length + Object.keys(nat).length + Object.keys(later).length, tagsAdded: addTags, notesCopied: noteList.length, transcriptLines: transcript.length });
+  if (dry) return { ...plan, transcriptSample: transcript.slice(0, 3) };
+  // 1 backup
+  await DB.prepare("INSERT OR REPLACE INTO merge_log(loser_id,master_id,copy_id,keep_id,name,contact_json,notes_json,transcript,status,err,at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'started','',?9)").bind(loser.id, master.id, copyId, keepId, name, JSON.stringify(loser), JSON.stringify(noteList), transcript.join("\n"), Date.now()).run();
+  const fail = async (step, e) => {
+    await DB.prepare("UPDATE merge_log SET status='failed', err=?1 WHERE loser_id=?2").bind(step + ": " + String(e && e.message || e).slice(0, 300), loser.id).run().catch(() => {});
+    return { ...plan, status: "failed", reason: step };
+  };
+  // 2 fields, tags, notes, transcript onto the master (before anything is deleted)
+  if (Object.keys(nat).length) {
+    const r = await ghlJson(env, `/contacts/${master.id}`, { method: "PUT", body: JSON.stringify(nat) });
+    if (!r.ok) return fail("native fields " + r.status);
+  }
+  if (cf.length) {
+    await new Promise(res => setTimeout(res, 400));
+    const r = await ghlJson(env, `/contacts/${master.id}`, { method: "PUT", body: JSON.stringify({ customFields: cf }) });
+    if (!r.ok) return fail("custom fields " + r.status);
+  }
+  if (addTags.length) await ghlAddTag(env, master.id, addTags);
+  const stamp = d => String(d || "").slice(0, 10);
+  for (const n of noteList) await ghlNote(env, master.id, `[Merged from duplicate contact, note of ${stamp(n.dateAdded)}] ${n.body || ""}`);
+  for (let i = 0; i < transcript.length; i += 60) await ghlNote(env, master.id, `[Merged from duplicate contact] Calls, texts and emails${transcript.length > 60 ? ` (part ${i / 60 + 1} of ${Math.ceil(transcript.length / 60)})` : ""}:\n` + transcript.slice(i, i + 60).join("\n"));
+  // 3 delete the other contact, then give the master its email/phone
+  const del = await ghlJson(env, `/contacts/${loser.id}`, { method: "DELETE" });
+  if (!del.ok && del.status !== 404) return fail("delete " + del.status);
+  if (Object.keys(later).length) {
+    await new Promise(res => setTimeout(res, 800));
+    const r = await ghlJson(env, `/contacts/${master.id}`, { method: "PUT", body: JSON.stringify(later) });
+    if (!r.ok) await DB.prepare("UPDATE merge_log SET err=?1 WHERE loser_id=?2").bind("email/phone not set on master: " + r.status, loser.id).run().catch(() => {});
+  }
+  const rmTags = [ "duplicate", ...keepUntouched ? [] : [ "untouched" ] ];
+  await ghlRemoveTag(env, master.id, rmTags);
+  await ghlNote(env, master.id, `Merged with a duplicate of this business (${loser.id}, removed). This contact was kept because it is ${plan.masterIs}. Its notes${transcript.length ? ", a transcript of its calls/texts/emails" : ""} and missing details were copied here.`);
+  // 4 the site: the listing keeps its address; every D1 reference moves to the master
+  try {
+    const tbls = (await DB.prepare("SELECT m.name FROM sqlite_master m WHERE m.type='table' AND EXISTS (SELECT 1 FROM pragma_table_info(m.name) WHERE name='ghl_id')").all()).results || [];
+    const ops = [ DB.prepare("DELETE FROM dup_hidden WHERE ghl_id IN (?1,?2)").bind(copyId, master.id) ];
+    if (masterIsCopy) ops.push(DB.prepare("DELETE FROM businesses WHERE ghl_id=?1").bind(master.id), DB.prepare("UPDATE businesses SET ghl_id=?1 WHERE ghl_id=?2").bind(master.id, loser.id));
+    for (const t of tbls.map(r => r.name).filter(n => ![ "businesses", "dup_hidden", "merge_log" ].includes(n))) ops.push(DB.prepare(`UPDATE OR IGNORE "${t}" SET ghl_id=?1 WHERE ghl_id=?2`).bind(master.id, loser.id));
+    ops.push(DB.prepare("UPDATE dup_hidden SET keep_id=?1 WHERE keep_id=?2").bind(master.id, loser.id), DB.prepare("UPDATE merge_log SET status='done' WHERE loser_id=?1").bind(loser.id));
+    await DB.batch(ops);
+    if (masterIsCopy) await refreshOne(env, DB, master.id);
+  } catch (e) {
+    return fail("site update", e);
+  }
+  return plan;
+}
+
+async function mergeBatch(env, DB, max, dry) {
+  const rows = (await DB.prepare("SELECT h.ghl_id, h.keep_id FROM dup_hidden h WHERE h.ghl_id NOT IN (SELECT copy_id FROM merge_log WHERE status IN ('manual','failed','skip')) ORDER BY h.created_at, h.ghl_id LIMIT ?1").bind(max).all()).results || [];
+  const out = [];
+  for (const r of rows) {
+    try {
+      const res = await mergePair(env, DB, r.ghl_id, r.keep_id, dry);
+      if (!dry && [ "manual", "skip" ].includes(res.status)) await DB.prepare("INSERT OR REPLACE INTO merge_log(loser_id,master_id,copy_id,keep_id,name,status,err,at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)").bind(res.loser || r.ghl_id, res.master || r.keep_id, r.ghl_id, r.keep_id, res.name || "", res.status, res.reason || "", Date.now()).run().catch(() => {});
+      out.push(res);
+    } catch (e) {
+      out.push({ copyId: r.ghl_id, keepId: r.keep_id, status: "error", reason: e.message });
+      if (!dry) await DB.prepare("INSERT OR REPLACE INTO merge_log(loser_id,master_id,copy_id,keep_id,status,err,at) VALUES(?1,?2,?3,?4,'failed',?5,?6)").bind(r.ghl_id, r.keep_id, r.ghl_id, r.keep_id, e.message.slice(0, 300), Date.now()).run().catch(() => {});
+    }
+  }
+  const left = await DB.prepare("SELECT COUNT(*) n FROM dup_hidden").first();
+  return { out, left: left ? left.n : 0 };
+}
 
 async function dedupeListings(DB) {
   let hidden = 0, released = 0;
@@ -9624,7 +9786,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.03-shared";
+const BUILD = "v17.04-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -9698,6 +9860,15 @@ const _export = {
         if (gp.done) console.log(`cron: refreshed Google reviews for ${gp.done} listings, ${gp.left} left`);
       } catch (e) {
         console.log("cron google-reviews batch failed: " + e.message);
+      }
+      try {
+        const ma = await DB.prepare("SELECT v FROM meta WHERE k='merge_auto'").first();
+        if (ma && ma.v === "1") {
+          const mb = await mergeBatch(env, DB, MERGE_BATCH, false);
+          if (mb.out.length) console.log(`cron: merged ${mb.out.filter(x => x.status === "done").length} duplicate pair(s), ${mb.out.filter(x => x.status !== "done").length} left for a person or failed, ${mb.left} to go`);
+        }
+      } catch (e) {
+        console.log("cron duplicate merge failed: " + e.message);
       }
       try {
         const dt = await dupTagBatch(env, DB, 100);
@@ -10034,6 +10205,27 @@ const _export = {
         }
         const hid = (await DB.prepare("SELECT name,sub,ghl_id,created_at FROM competitor_hidden ORDER BY name").all()).results || [];
         return TXT(`${scanned ? `Re-checked ${scanned} listing(s).\n` : ""}${hid.length} listing(s) kept off the directory as competitors. Tag a contact "not-competitor" in GHL to bring it back.\n\n` + hid.map(h => `${h.name} | ${h.sub} | ${h.ghl_id}`).join("\n"));
+      }
+      if (p[1] === "merge") {
+        if (role !== "admin") return TXT("Merging needs full admin access — ask an admin.");
+        await migrate(DB, env);
+        const n = Math.max(1, Math.min(40, parseInt(u.searchParams.get("n") || "20", 10) || 20));
+        if (u.searchParams.has("auto") && req.method === "POST") {
+          const on = u.searchParams.get("auto") === "1";
+          await DB.prepare("INSERT INTO meta(k,v) VALUES('merge_auto',?1) ON CONFLICT(k) DO UPDATE SET v=?1").bind(on ? "1" : "0").run();
+          return TXT("Background merging is now " + (on ? "ON (a batch every 5 minutes)." : "OFF."));
+        }
+        const fmt = r => `${String(r.status || "").toUpperCase()}  ${r.name || ""}  [copy ${r.copyId} · listing ${r.keepId}]` + (r.master ? `\n   keep ${r.master} = ${r.masterIs}; remove ${r.loser}` : "") + (r.fieldsCopied !== undefined ? `\n   fields ${r.fieldsCopied} · notes ${r.notesCopied} · transcript lines ${r.transcriptLines} · tags +${(r.tagsAdded || []).join(", ") || "none"}` : "") + (r.reason ? `\n   ${r.reason}` : "") + ((r.transcriptSample || []).length ? "\n   e.g. " + r.transcriptSample.join("\n        ") : "");
+        if (u.searchParams.has("dry") || req.method === "POST") {
+          const dry = req.method !== "POST";
+          const r = await mergeBatch(env, DB, n, dry);
+          return TXT(`${dry ? "PREVIEW (nothing changed)" : "MERGED"} — ${r.out.length} pair(s); ${r.left} still in the duplicates list.\n\n` + r.out.map(fmt).join("\n\n"));
+        }
+        const st = (await DB.prepare("SELECT status, COUNT(*) n FROM merge_log GROUP BY status").all()).results || [];
+        const left = await DB.prepare("SELECT COUNT(*) n FROM dup_hidden").first();
+        const auto = await DB.prepare("SELECT v FROM meta WHERE k='merge_auto'").first();
+        const manual = (await DB.prepare("SELECT name, copy_id, keep_id, err FROM merge_log WHERE status IN ('manual','failed','skip') ORDER BY at DESC LIMIT 200").all()).results || [];
+        return TXT(`Duplicate merge — ${S.city}\nPairs still to merge: ${left ? left.n : 0}\nBackground merging: ${auto && auto.v === "1" ? "ON" : "OFF"}\nDone so far: ${st.map(r => r.status + " " + r.n).join(", ") || "none"}\n\nPreview: /admin/merge?dry=1&n=20 · Run a batch: POST /admin/merge?n=20 · Background: POST ?auto=1 / ?auto=0\n\nLeft for a person (opportunities/appointments) or failed:\n` + (manual.map(r => `• ${r.name || "?"} — copy ${r.copy_id}, listing ${r.keep_id}: ${r.err}`).join("\n") || "none"));
       }
       if (p[1] === "duplicates") {
         if (role !== "admin") return TXT("Duplicates needs full admin access — ask an admin.");
