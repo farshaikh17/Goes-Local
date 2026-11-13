@@ -2897,7 +2897,53 @@ const LISTING_VERIFICATION_TIERS = {
   "listing verified pro": "pro"
 };
 
-async function applyListingVerification(env, DB, cid) {
+// v17.03 (Eric, 13 Nov — Martin Integrative Animal Clinic): Miami's file was imported twice, so a business can have a
+// hidden duplicate contact assigned to a different rep. When a rep marks Listing Verified on the hidden copy, the
+// owner's emails went out from the live listing's rep instead. Now the verification (Listing Verification, Owner
+// Email/Name/Phone) and the rep (assignedTo) are copied to the live listing — native and custom fields in separate
+// calls — the held owner check moves with it, both contacts get a note, and the live listing is verified as usual.
+// Done once per copy and verification (meta "lv_moved:<copy>"), so the 5-minute sync doesn't repeat it.
+async function moveVerificationToKept(env, DB, cid, c, m) {
+  let keep = null;
+  try {
+    const h = await DB.prepare("SELECT keep_id FROM dup_hidden WHERE ghl_id=?1").bind(cid).first();
+    if (h && h.keep_id && h.keep_id !== cid && await DB.prepare("SELECT 1 FROM businesses WHERE ghl_id=?1").bind(h.keep_id).first()) keep = h.keep_id;
+  } catch {}
+  if (!keep) return null;
+  const fids = [ "listing verification", "owner email", "owner name", "owner phone" ].map(l => fieldId(m, l)).filter(Boolean);
+  const cf = (c.customFields || []).filter(f => fids.includes(f.id) && String(f.value == null ? "" : f.value).trim()).map(f => ({ id: f.id, value: f.value }));
+  const sig = JSON.stringify([ keep, c.assignedTo || "", cf ]);
+  try {
+    const prev = await DB.prepare("SELECT v FROM meta WHERE k=?1").bind("lv_moved:" + cid).first();
+    if (prev && prev.v === sig) return { ok: true, skipped: true, cid: cid, reason: "verification already moved to the live listing " + keep };
+  } catch {}
+  const put = async body => {
+    const r = await fetch(`${API}/contacts/${keep}`, { method: "PUT", headers: { ...H(env), "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) console.log("moveVerificationToKept PUT " + r.status + ": " + (await r.text()).slice(0, 160));
+    return r.ok;
+  };
+  let ok = true;
+  if (c.assignedTo) ok = await put({ assignedTo: c.assignedTo }) && ok;
+  if (cf.length) {
+    await new Promise(res => setTimeout(res, 600));
+    ok = await put({ customFields: cf }) && ok;
+  }
+  if (!ok) return { ok: false, cid: cid, reason: "couldn't copy the verification to the live listing " + keep };
+  try {
+    await DB.prepare("UPDATE owner_pending SET ghl_id=?1 WHERE ghl_id=?2 AND NOT EXISTS (SELECT 1 FROM owner_pending WHERE ghl_id=?1)").bind(keep, cid).run();
+    await DB.prepare("INSERT INTO meta(k,v) VALUES(?1,?2) ON CONFLICT(k) DO UPDATE SET v=?2").bind("lv_moved:" + cid, sig).run();
+  } catch (e) {
+    console.log("moveVerificationToKept bookkeeping failed: " + e.message);
+  }
+  const live = `${GHL_APP_URL}/v2/location/${env.GHL_LOCATION_ID}/contacts/detail/`;
+  await ghlNote(env, cid, `This contact is a hidden duplicate of the listing shown on the website. The Listing Verification, owner details and assigned rep were copied to the live listing so the owner's emails come from the right rep: ${live}${keep}`);
+  await ghlNote(env, keep, `Listing Verification, owner details and assigned rep copied here from a hidden duplicate of this business (the rep marked Verified on the copy): ${live}${cid}`);
+  await new Promise(res => setTimeout(res, 800));
+  const r = await applyListingVerification(env, DB, keep, 1);
+  return { ...r, movedFrom: cid, cid: keep };
+}
+
+async function applyListingVerification(env, DB, cid, depth) {
   if (!DB || !cid) return {
     ok: false,
     reason: "no business id"
@@ -2916,6 +2962,11 @@ async function applyListingVerification(env, DB, cid) {
     skipped: true,
     reason: raw ? `"${raw}" isn't a verified status — nothing to do` : "field is blank or still Pending — nothing to do"
   };
+  // v17.03: a rep verified a hidden duplicate copy — the verification belongs on the live listing.
+  if (!depth) {
+    const moved = await moveVerificationToKept(env, DB, cid, c, m);
+    if (moved) return moved;
+  }
   // A cold-call "Verified" (no claim or add request from the owner on the site) on a listing nobody has claimed is held:
   // the invite goes out as before, but the listing only becomes claimed — and gets its claimed/paid tags — when the
   // owner signs in for the first time with the code we email them (activateOwner). Reps were marking leads Verified
@@ -9573,7 +9624,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.02-shared";
+const BUILD = "v17.03-shared";
 
 const APP_COOKIE = "gl_app";
 
