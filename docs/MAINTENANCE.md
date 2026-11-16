@@ -28,3 +28,14 @@ flood (changelog/v16.81.md); Eric keeps it off until GHL support resolves the ti
   they were on, unless a newer one has been released for them), then open /debug and check VERSION, and click through.
   While a site is off, GHL webhooks (e.g. Listing Verified) are not processed; the 5-minute sync catches up the
   Listing Verification changes after it is back.
+
+## 16 Nov 2026 — Tampa and the six state sites back on
+Eric: "Restart all websites ranging from Tampa to all the states please". Each was put back with `wrangler rollback` to
+its version from just before it was switched off (no new code):
+- goes-local-tampa-api → e5c74ff3 (v16.82-shared). Tampa's GHL sub-account is still inactive (sync: 401 "Location is
+  not active"), so the site shows its 5,113 listings from 27 Oct, but nothing syncs and forms/emails that need GHL
+  fail until the account is reactivated (then deploy current code with scripts/deploy.sh tampa).
+- homeservices-ny/il/ga/ma/pa/nc-api → their v16.76-shared versions (bed321ee, fddbeba7, ca882bc0, 53146387,
+  fcf488fc, b1f481d8).
+Checked live: home, Best, search and a listing/area page load on all seven, no JS errors.
+Still paused: Miami only. Orlando has been live since 15 Nov (v17.04).
