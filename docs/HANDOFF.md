@@ -10,7 +10,7 @@
 
 ## Current status — 12 Nov 2026 (read this first)
 
-- **Live:** Orlando (v17.04, 15 Nov), Tampa (v16.82; its GHL account is still inactive) and the six state sites (v16.76), restored 16 Nov. Miami is paused (503). See docs/MAINTENANCE.md.
+- **Live:** every site again (16 Nov): Miami and Orlando on v17.04, Tampa on v16.82 (its GHL account is still inactive), the six state sites on v16.76. See docs/MAINTENANCE.md. v17.05 (merge fix) is committed, not deployed.
   Miami ~17,800 listings, Orlando ~13,600. North Carolina (states branch) is up.
 - **Switched off (maintenance page, 503):** Tampa and the NY/IL/GA/MA/PA state sites since 28 Oct — see
   `docs/MAINTENANCE.md`. Tampa's GHL sub-account is inactive after the 27–28 Oct sign-up flood (`changelog/v16.81.md`);

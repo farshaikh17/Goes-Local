@@ -38,4 +38,7 @@ its version from just before it was switched off (no new code):
 - homeservices-ny/il/ga/ma/pa/nc-api → their v16.76-shared versions (bed321ee, fddbeba7, ca882bc0, 53146387,
   fcf488fc, b1f481d8).
 Checked live: home, Best, search and a listing/area page load on all seven, no JS errors.
-Still paused: Miami only. Orlando has been live since 15 Nov (v17.04).
+Still paused at that point: Miami only. Orlando has been live since 15 Nov (v17.04).
+- Miami back on the same day (Eric: "Make Miami live again too"): rollback to bdbcad13 (v17.04-shared, its pre-pause
+  version). Checked live: home, category, Best, blog, contact, search and a listing load, no JS errors.
+  Nothing is paused any more.
