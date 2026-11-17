@@ -1860,6 +1860,10 @@ async function migrate(DB, env) {
     try {
       await DB.prepare("CREATE TABLE IF NOT EXISTS area_hidden(ghl_id TEXT PRIMARY KEY, name TEXT DEFAULT '', addr TEXT DEFAULT '', st TEXT DEFAULT '', created_at INTEGER)").run();
     } catch {}
+    // v17.06: contacts that hold a GHL deal — never the one removed by a merge.
+    try {
+      await DB.prepare("CREATE TABLE IF NOT EXISTS merge_keep(ghl_id TEXT PRIMARY KEY, why TEXT DEFAULT '')").run();
+    } catch {}
     // v17.04: one row per merged/left-alone duplicate pair, with a backup of the removed contact.
     try {
       await DB.prepare("CREATE TABLE IF NOT EXISTS merge_log(loser_id TEXT PRIMARY KEY, master_id TEXT, copy_id TEXT, keep_id TEXT, name TEXT DEFAULT '', contact_json TEXT DEFAULT '', notes_json TEXT DEFAULT '', transcript TEXT DEFAULT '', status TEXT, err TEXT DEFAULT '', at INTEGER)").run();
@@ -2809,11 +2813,21 @@ async function mergePair(env, DB, copyId, keepId, dry) {
   }
   if (!a) return { copyId, keepId, status: "skip", reason: "the listing contact isn't in the CRM" };
   const act = x => Date.parse(x.lastActivity || "") || 0, worked = x => !(x.tags || []).some(t => String(t).toLowerCase() === "untouched");
-  const masterIsCopy = act(b) > act(a) || act(b) === act(a) && worked(b) && !worked(a);
+  let masterIsCopy = act(b) > act(a) || act(b) === act(a) && worked(b) && !worked(a);
+  // v17.06: contacts that hold a deal (merge_keep, loaded from GHL by the dev team — the site's GHL key can't read
+  // opportunities) are always the one kept; if both hold one, a person merges them.
+  let dealHolders = new Set();
+  try {
+    dealHolders = new Set(((await DB.prepare("SELECT ghl_id FROM merge_keep WHERE ghl_id IN (?1,?2)").bind(a.id, b.id).all()).results || []).map(r => r.ghl_id));
+  } catch {}
+  if (dealHolders.size === 2) return { copyId, keepId, name: b.companyName || "", status: "manual", reason: "both contacts hold a deal (opportunity)" };
+  if (dealHolders.has(b.id)) masterIsCopy = true; else if (dealHolders.has(a.id)) masterIsCopy = false;
   const master = masterIsCopy ? b : a, loser = masterIsCopy ? a : b;
   // Never delete a contact that has opportunities or appointments.
   const [opp, appt] = await Promise.all([ ghlJson(env, `/opportunities/search?locationId=${env.GHL_LOCATION_ID}&contactId=${loser.id}&limit=1&status=all`), ghlJson(env, `/contacts/${loser.id}/appointments`) ]);
-  const nOpp = opp.ok && opp.j ? (opp.j.opportunities || []).length : -1, nAppt = appt.ok && appt.j ? (appt.j.events || []).length : -1;
+  // The site's GHL key has no opportunities permission (401/403): Eric, 17 Nov — "we don't exactly use pipelines";
+  // deal holders are protected by merge_keep above instead.
+  const nOpp = opp.ok && opp.j ? (opp.j.opportunities || []).length : [ 401, 403 ].includes(opp.status) ? 0 : -1, nAppt = appt.ok && appt.j ? (appt.j.events || []).length : -1;
   const name = master.companyName || [ master.firstName, master.lastName ].filter(Boolean).join(" ");
   const plan = { copyId, keepId, name, master: master.id, masterIs: masterIsCopy ? "the hidden copy (more recent activity or work)" : "the listing on the site", loser: loser.id, masterActivity: master.lastActivity || "", loserActivity: loser.lastActivity || "" };
   if (nOpp !== 0 || nAppt !== 0) return { ...plan, status: "manual", reason: nOpp < 0 || nAppt < 0 ? `couldn't check opportunities (${opp.status}) / appointments (${appt.status})` : `the contact to remove has ${nOpp} opportunit${nOpp === 1 ? "y" : "ies"} / ${nAppt} appointment(s)` };
@@ -9786,7 +9800,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.05-shared";
+const BUILD = "v17.06-shared";
 
 const APP_COOKIE = "gl_app";
 
