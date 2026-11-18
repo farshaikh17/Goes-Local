@@ -2896,7 +2896,7 @@ async function mergePair(env, DB, copyId, keepId, dry) {
   await ghlNote(env, master.id, `Merged with a duplicate of this business (${loser.id}, removed). This contact was kept because it is ${plan.masterIs}. Its notes${transcript.length ? ", a transcript of its calls/texts/emails" : ""} and missing details were copied here.`);
   // 4 the site: the listing keeps its address; every D1 reference moves to the master
   try {
-    // v17.10: live D1 refuses pragma_table_info() (SQLITE_AUTH — the 18 Nov first batch failed here, local dev allows
+    // v17.10: live D1 refuses SQLite's table_info pragma function (SQLITE_AUTH — the 18 Nov first batch failed here, local dev allows
     // it); read the column from each table's CREATE statement instead (ALTER TABLE ADD COLUMN updates it too).
     const tbls = (((await DB.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'").all()).results) || []).filter(t => /[(,]\s*"?ghl_id"?\s/i.test(String(t.sql || "")));
     const ops = [ DB.prepare("DELETE FROM dup_hidden WHERE ghl_id IN (?1,?2)").bind(copyId, master.id) ];
