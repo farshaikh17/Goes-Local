@@ -1,0 +1,118 @@
+From 1eb19d892f5ba2e488d87b24af23a7c5239b4b04 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 17:23:56 +0000
+Subject: [PATCH 1/2] v17.08-shared: Lead Category job reads its queue before
+ the GHL field list; empty queue = no GHL call
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PqaCh9qhLwm9qwy5gHhRN4
+---
+ changelog/v17.08.md          | 21 ++++++++++++++++++++
+ scripts/qa/cron-cpu.test.mjs | 37 ++++++++++++++++++++++++++++++++++++
+ worker.js                    |  6 ++++--
+ 3 files changed, 62 insertions(+), 2 deletions(-)
+ create mode 100644 changelog/v17.08.md
+
+diff --git a/changelog/v17.08.md b/changelog/v17.08.md
+new file mode 100644
+index 0000000..5a60632
+--- /dev/null
++++ b/changelog/v17.08.md
+@@ -0,0 +1,21 @@
++# v17.08-shared — follow-up A: the Lead Category job no longer asks GHL for its field list when nothing is queued
++
++Part of the CPU work (v17.07). Separate change; not part of the first 48-hour Orlando pilot.
++
++## Change
++- `leadCatBatch` (every 5-minute tick, every site): the pause check stays first; then the queue (`lead_cat_fix`,
++  up to 40 rows) is read BEFORE the GHL custom-field list. Empty queue → `{ done: 0, left: 0 }` at once (same result
++  as before when the field exists), no GHL request. Otherwise the rows already read are used.
++- Unchanged: return shape, pause result, "no Lead Category field" error when rows are waiting, 429 stops the batch,
++  400/404 drop the row, a row is deleted only if its category didn't change meanwhile (`WHERE ghl_id AND cat`).
++- Only difference: with an empty queue AND the field missing, the job no longer reports the missing field (it has
++  nothing to write).
++- Saves one GHL API call (custom-field list) plus parsing it on ~288 ticks a day per site whenever the queue is empty
++  — also GHL rate-limit budget. No observed queue writes in the 48 h baseline logs (no "Lead Category written" line).
++
++## Tests (scripts/qa/cron-cpu.test.mjs, fake GHL)
++- 9/9: empty (0 field lookups — fails on v17.07, 1 lookup), pending (1 lookup, 3 custom-field-only writes, rows
++  removed, same log line), paused, 429 (stops, nothing removed, retried next tick), missing field with a row queued.
++
++## Status
++- Committed on branch cpu-followups; not deployed.
+diff --git a/scripts/qa/cron-cpu.test.mjs b/scripts/qa/cron-cpu.test.mjs
+index 86d2f20..e472458 100644
+--- a/scripts/qa/cron-cpu.test.mjs
++++ b/scripts/qa/cron-cpu.test.mjs
+@@ -255,5 +255,42 @@ const MIN = 6e4;
+   }
+ }
+ 
++// ================= follow-up A: Lead Category job skips the GHL field lookup when nothing is queued =================
++{
++  console.log("\n== Follow-up A: leadCatBatch");
++  const s = await site({ CITY_SYNC_COOLDOWN_MIN: "60" });
++  await s.tick(); await s.tick();                                     // first full pass, then every tick below skips the sync
++  const quiet = async () => { await s.setMeta("cron_hourly_at", Date.now()); const f = s.g.calls.customFields, p = s.g.calls.put.length; const l = await s.tick(); return { fields: s.g.calls.customFields - f, puts: s.g.calls.put.slice(p), l }; };
++  const q = n => s.count("SELECT COUNT(*) n FROM lead_cat_fix");
++  const add = (...ids) => Promise.all(ids.map((id, i) => s.DB.prepare("INSERT INTO lead_cat_fix(ghl_id,cat,created_at) VALUES(?1,'Plumbing',?2)").bind(id, i + 1).run()));
++  await s.DB.prepare("DELETE FROM lead_cat_fix").run();
++  let r = await quiet();
++  check("empty queue: no GHL custom-field lookup on the tick", r.fields === 0, `lookups=${r.fields}`);
++  check("empty queue: no GHL writes, no log line", r.puts.length === 0 && !r.l.some(x => /Lead Category/.test(x)));
++  await add("qa0001", "qa0002", "qa0003");
++  r = await quiet();
++  check("pending: one field lookup, 3 Lead Category writes (custom field only)", r.fields === 1 && r.puts.length === 3 && r.puts.every(p => JSON.stringify(Object.keys(p.body)) === '["customFields"]' && p.body.customFields[0].id === "f_lead"), `lookups=${r.fields} puts=${r.puts.length}`);
++  check("pending: written rows are removed from the queue", (await q()) === 0);
++  check("pending: log line unchanged", r.l.some(x => /cron: Lead Category written for 3 contacts, 0 left/.test(x)));
++  await add("qa0004", "qa0005");
++  await s.setMeta("leadcat_pause", "1");
++  r = await quiet();
++  check("paused: no lookup, no writes, queue kept", r.fields === 0 && r.puts.length === 0 && (await q()) === 2);
++  await s.setMeta("leadcat_pause", "0");
++  s.g.put429 = true;
++  r = await quiet();
++  check("rate-limited (429): stops after the first write, nothing removed", r.puts.length === 1 && (await q()) === 2, `puts=${r.puts.length} left=${await q()}`);
++  s.g.put429 = false;
++  r = await quiet();
++  check("…retried next tick: both written and removed", r.puts.length === 2 && (await q()) === 0);
++  await add("qa0006");
++  s.g.noLeadField = true;
++  r = await quiet();
++  check("missing Lead Category field with a row queued: same error, row kept", r.l.some(x => /no Lead Category field/.test(x)) && (await q()) === 1 && r.puts.length === 0);
++  s.g.noLeadField = false;
++  await s.DB.prepare("UPDATE lead_cat_fix SET cat='Roofing' WHERE ghl_id='qa0006'").run();
++  await s.mf.dispose();
++}
++
+ console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
+ process.exit(failures ? 1 : 0);
+diff --git a/worker.js b/worker.js
+index 6c5ef7b..3fa337a 100644
+--- a/worker.js
++++ b/worker.js
+@@ -4084,9 +4084,11 @@ async function dupTagBatch(env, DB, max) {
+ 
+ async function leadCatBatch(env, DB, maxUpdates) {
+   if (await DB.prepare("SELECT 1 FROM meta WHERE k='leadcat_pause' AND v='1'").first().catch(() => null)) return { done: 0, left: -1, paused: true };
++  // Read the queue first: with nothing queued (most ticks) there is no GHL custom-field lookup at all.
++  const rows = (await DB.prepare("SELECT ghl_id,cat FROM lead_cat_fix ORDER BY created_at LIMIT ?1").bind(maxUpdates).all()).results || [];
++  if (!rows.length) return { done: 0, left: 0 };
+   const fid = fieldId(await fields(env), "lead category");
+   if (!fid) return { done: 0, left: 0, error: "no Lead Category field" };
+-  const rows = (await DB.prepare("SELECT ghl_id,cat FROM lead_cat_fix ORDER BY created_at LIMIT ?1").bind(maxUpdates).all()).results || [];
+   let done = 0;
+   for (const r of rows) {
+     const resp = await fetch(`${API}/contacts/${r.ghl_id}`, {
+@@ -9808,7 +9810,7 @@ function BESTCTA(idx, slug, hood) {
+   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
+ }
+ 
+-const BUILD = "v17.07-shared";
++const BUILD = "v17.08-shared";
+ 
+ const APP_COOKIE = "gl_app";
+ 
+-- 
+2.43.0
+

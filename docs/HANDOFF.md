@@ -8,7 +8,32 @@
 
 > **Status updates since the handoff** are tracked in `docs/DEPLOY.md` (deploy setup) and `changelog/`.
 
-## Current status — 12 Nov 2026 (read this first)
+## Status 18 Nov 2026 evening (read first — handover to the next chat)
+
+**Live:** Orlando v17.07 (version eff5dfc9; CPU pilot, CITY_SYNC_COOLDOWN_MIN=60, confirmed skipping at 17:50 UTC —
+see docs/CPU-PILOT.md; 48-h comparison reminder set for 20 Nov 18:15 UTC). Miami v17.06 (bfaefe58). Others unchanged.
+
+**Duplicate merge — Eric is building the next step in another chat:**
+- First Miami batch (20 pairs) ran 18 Nov: every GHL step done; the website step failed on live D1 (SQLITE_AUTH:
+  `pragma_table_info` is refused on live D1, allowed locally). Repaired by hand for all 20 (changelog/v17.10.md);
+  the 4 listings whose kept contact was the hidden copy checked live (200).
+- **v17.10 committed on this branch, NOT deployed**: mergePair reads ghl_id tables from sqlite_master.sql; precheck
+  blocks `pragma_…()`. Without it every merge batch fails at the website step again — deploy it (or an equivalent fix)
+  before any more merging. Background merging (merge_auto) is OFF.
+- Problem Eric saw: businesses imported 3+ times have several copies (Miami: 6,972 businesses with 1 copy, 1,542 with
+  2+; Orlando 664 / 89). The queue works per pair, so a batch can leave a business with copies (Ace Electricians,
+  Champ Plumbing: 2 contacts each). 14 of the first 20 still have 19 copies waiting.
+- Agreed plan (Eric, 18 Nov, building it elsewhere): merge **all copies of a business together** (batch = N businesses);
+  hold back only businesses with no phone and no street address (Miami 12 businesses / 38 contacts, Orlando 0, e.g.
+  "MVR | Premium Stay…" with 19 copies) as a list for Eric to decide; finish the 14 from batch 1 first, then Eric
+  re-checks Ace and Champ; then continue Miami → Orlando, checking every merged listing live.
+- After a merge, dup_hidden.keep_id is re-pointed to the master, so remaining copies of that business follow it.
+
+**Not deployed, local only:** CPU follow-ups A (v17.08, Lead Category idle skip) and B (v17.09, best-of index skip)
+as patches in docs/patches/ (made on top of v17.07; apply with `git am`, renumber the versions,
+they include their changelogs). Tests: scripts/qa/cron-cpu.test.mjs (Node + SQLite stand-in + fake GHL).
+
+## Current status — 12 Nov 2026
 
 - **Live:** every site again (16 Nov): Miami and Orlando on v17.04, Tampa on v16.82 (its GHL account is still inactive), the six state sites on v16.76. See docs/MAINTENANCE.md. v17.05 (merge fix) is committed, not deployed.
   Miami ~17,800 listings, Orlando ~13,600. North Carolina (states branch) is up.

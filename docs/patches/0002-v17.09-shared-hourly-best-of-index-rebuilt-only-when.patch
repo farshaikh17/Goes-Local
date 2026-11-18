@@ -1,0 +1,268 @@
+From 000f565a40b100b00b308f9c8141cb95c031712b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 17:33:38 +0000
+Subject: [PATCH 2/2] v17.09-shared: hourly best-of index rebuilt only when its
+ inputs changed (D1 change counter)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PqaCh9qhLwm9qwy5gHhRN4
+---
+ changelog/v17.09.md          | 37 +++++++++++++++
+ scripts/qa/cron-cpu.test.mjs | 88 ++++++++++++++++++++++++++++++++++--
+ worker.js                    | 40 +++++++++++++---
+ 3 files changed, 154 insertions(+), 11 deletions(-)
+ create mode 100644 changelog/v17.09.md
+
+diff --git a/changelog/v17.09.md b/changelog/v17.09.md
+new file mode 100644
+index 0000000..5676a77
+--- /dev/null
++++ b/changelog/v17.09.md
+@@ -0,0 +1,37 @@
++# v17.09-shared — follow-up B: hourly best-of index is rebuilt only when something it uses changed
++
++Part of the CPU work (v17.07). Separate change; not part of the first 48-hour Orlando pilot.
++
++## What the index depends on (traced)
++`computeBestIndex` reads only `businesses` rows: existence, `cs`, `sub`, `hood`, `rat`, `rev` (the filter
++`rat>=4 AND rev>=5 AND sub<>''`, grouped by cs/sub/hood). Hidden listings (duplicate, out-of-area, competitor,
++removed by the sync or an admin) are DELETEd from `businesses`; there is no separate visibility flag. Write paths
++found: sync upsert and stale/competitor/out-of-area deletes, insertOne/refreshOne (claims, approvals, owner edits,
++payments, listing verification), dedupe, merges (re-point/delete), admin delete/edit routes, the sub-category
++re-map in migrate. Rather than add tracking to each, D1 itself counts changes:
++
++## Change
++- migrate creates `meta.best_gen` and three triggers on `businesses` (idempotent `IF NOT EXISTS`, inside try/catch):
++  after INSERT, after DELETE, and after UPDATE OF rat/rev/sub/cs/hood **only when a value really changed**
++  (`OLD.x IS NOT NEW.x`). Each bumps `best_gen`. Covers every current and future code path.
++- `computeBestIndex(DB, true)` (hourly cron only) reads best_gen first, and skips when the stored index was built at
++  the same best_gen, by the same code version (BUILD), less than 24 h ago. Rebuilds when the index or the counter is
++  missing, the version changed, a day passed, or anything changed. The index and its build stamp are written together.
++- A change made during a rebuild leaves best_gen ahead of the stored stamp → rebuilt next hour. A failed rebuild
++  writes nothing → the last good index keeps being served → retried next hour. bestIndex() and other callers unchanged.
++
++## Expected saving — small
++Orlando's index query groups 2,865 rows (13,588 rows read on D1) once an hour; the Worker-side part is the JSON
++work on those rows, a few ms per run → well under 1% of the scheduled CPU. The D1 reads (~326k rows/day) are saved
++too. The cost is three triggers on the main table (each a one-row meta update when a listing really changes).
++Recommendation: ship only if the D1 reads matter; the CPU gain alone is marginal.
++
++## Tests (scripts/qa/cron-cpu.test.mjs)
++26/26: first build; unchanged → skip; phone edit → skip; same value rewritten → skip; rating, sub-category,
++neighbourhood, category, review count → rebuild; delete → rebuild and correct count; new listing via sync →
++rebuild; merge re-point (same data) → skip; failed rebuild keeps the last good index and retries; edit during a
++rebuild stays pending and is included next run; missing index / other version / >1 day / no counter → rebuild;
++migrate repeatable (3 triggers). Local suite 99/99 (triggers created by migrate in the local D1).
++
++## Status
++- Committed on branch cpu-followups; not deployed.
+diff --git a/scripts/qa/cron-cpu.test.mjs b/scripts/qa/cron-cpu.test.mjs
+index e472458..41b6c61 100644
+--- a/scripts/qa/cron-cpu.test.mjs
++++ b/scripts/qa/cron-cpu.test.mjs
+@@ -71,7 +71,7 @@ function fakeGhl() {
+ }
+ 
+ // ---------- D1 / KV stand-ins ----------
+-function d1(sqlite) {
++function d1(sqlite, hooks = {}) {
+   const conv = a => { if (a === undefined) throw new Error("D1_TYPE_ERROR: undefined bind"); return typeof a === "boolean" ? (a ? 1 : 0) : a; };
+   const plain = r => r ? { ...r } : r;
+   class Stmt {
+@@ -79,7 +79,7 @@ function d1(sqlite) {
+     bind(...a) { return new Stmt(this.sql, a.map(conv)); }
+     _p() { return sqlite.prepare(this.sql); }
+     async first(col) { const r = plain(this._p().all(...this.args)[0]) ?? null; return col && r ? r[col] : r; }
+-    async all() { return { results: this._p().all(...this.args).map(plain), success: true, meta: {} }; }
++    async all() { if (hooks.onAll) await hooks.onAll(this.sql); return { results: this._p().all(...this.args).map(plain), success: true, meta: {} }; }
+     async raw() { return this._p().all(...this.args).map(r => Object.values(r)); }
+     async run() { const x = this._p().run(...this.args); return { success: true, meta: { changes: Number(x.changes), last_row_id: Number(x.lastInsertRowid) } }; }
+     _sync() { return /^\s*(select|with)\b/i.test(this.sql) || /\breturning\b/i.test(this.sql) ? { results: this._p().all(...this.args).map(plain), success: true } : (this._p().run(...this.args), { results: [], success: true }); }
+@@ -113,7 +113,8 @@ async function site(vars = {}) {
+   fs.copyFileSync(WORKER, copy);
+   const mod = await import(pathToFileURL(copy).href + "?s=" + (++siteNo));
+   const sqlite = new DatabaseSync(":memory:");
+-  const DB = d1(sqlite), KV = kv();
++  const hooks = {};
++  const DB = d1(sqlite, hooks), KV = kv();
+   const env = { "qa-directory-db": DB, SESSIONS: KV, GHL_LOCATION_ID: "LOCQA", GHL_API_TOKEN: "qa-fake-token", ADMIN_LOGIN_KEY: "localtestkey123", ...vars };
+   const run = async fn => {                       // fake GHL + captured logs only while this site's code runs
+     globalThis.fetch = (i, init) => g.handler(new Request(i, init));
+@@ -138,7 +139,7 @@ async function site(vars = {}) {
+   const setMeta = (k, v) => DB.prepare("INSERT INTO meta(k,v) VALUES(?1,?2) ON CONFLICT(k) DO UPDATE SET v=?2").bind(k, String(v)).run();
+   const count = async (sql = "SELECT COUNT(*) n FROM businesses", ...b) => ((await DB.prepare(sql).bind(...b).first()) || {}).n;
+   const syncLine = ls => ls.find(l => /cron: sync=/.test(l)) || "";
+-  return { mf, g, DB, KV, admin, tick, meta, setMeta, count, syncLine, logs };
++  return { mf, g, DB, KV, admin, tick, meta, setMeta, count, syncLine, logs, hooks };
+ }
+ 
+ const MIN = 6e4;
+@@ -292,5 +293,84 @@ const MIN = 6e4;
+   await s.mf.dispose();
+ }
+ 
++// ================= follow-up B: hourly best-of index rebuilt only when its inputs changed =================
++{
++  console.log("\n== Follow-up B: computeBestIndex");
++  const s = await site({ CITY_SYNC_COOLDOWN_MIN: "60" });
++  await s.tick(); await s.tick();
++  await s.DB.prepare("UPDATE businesses SET sub='Plumber',rat=4.6,rev=12 WHERE ghl_id<='qa0025'").run();
++  const hourly = async () => { await s.setMeta("cron_hourly_at", Date.now() - 2 * 3600e3); const l = await s.tick(); return l.find(x => /best-of index/.test(x)) || ""; };
++  const idx = async () => JSON.parse(await s.meta("best_index")).types;
++  const GROUP = /GROUP BY cs,sub,hood/;
++  let l = await hourly();
++  check("first hourly run builds the index", /rebuilt — 1 business types/.test(l), l);
++  check("index content: 25 plumbers", (await idx())[0].k === 25);
++  l = await hourly();
++  check("unchanged data -> rebuild skipped", /unchanged — rebuild skipped/.test(l), l);
++  await s.DB.prepare("UPDATE businesses SET ph='+15550000000' WHERE ghl_id='qa0001'").run();
++  l = await hourly();
++  check("edit to a field the index doesn't use (phone) -> skipped", /skipped/.test(l), l);
++  await s.DB.prepare("UPDATE businesses SET rat=4.7 WHERE ghl_id='qa0001'").run();
++  l = await hourly();
++  check("qualifying edit (rating) -> rebuilt", /rebuilt/.test(l), l);
++  await s.DB.prepare("UPDATE businesses SET rat=4.7 WHERE ghl_id='qa0001'").run();
++  l = await hourly();
++  check("same value written again (no real change) -> skipped", /skipped/.test(l), l);
++  for (const [what, sql] of [["sub-category", "UPDATE businesses SET sub='Plumbing' WHERE ghl_id='qa0002'"], ["neighbourhood", "UPDATE businesses SET hood='qa-hood' WHERE ghl_id='qa0003'"], ["category", "UPDATE businesses SET cs='qa-cat' WHERE ghl_id='qa0004'"], ["review count", "UPDATE businesses SET rev=99 WHERE ghl_id='qa0005'"]]) {
++    await s.DB.prepare(sql).run();
++    l = await hourly();
++    check(`${what} change -> rebuilt`, /rebuilt/.test(l), l);
++  }
++  await s.DB.prepare("DELETE FROM businesses WHERE ghl_id='qa0006'").run();
++  l = await hourly();
++  check("listing removed (delete / hide / merge copy) -> rebuilt", /rebuilt/.test(l), l);
++  check("…index reflects the removal (23 plumbers left: 1 re-categorised, 1 removed)", (await idx())[0].k === 23, String((await idx())[0].k));
++  s.g.contacts.set("qa9001", s.g.mk(9001));
++  await s.setMeta("synced_at", Date.now() - 61 * MIN); await s.tick(); await s.tick();
++  l = await hourly();
++  check("new listing from the sync -> rebuilt", /rebuilt/.test(l), l);
++  await s.DB.prepare("UPDATE businesses SET sub='Plumber',rat=4.6,rev=12 WHERE ghl_id<='qa0025'").run();   // the pass reset the test ratings from fake GHL
++  l = await hourly();
++  check("ratings set again -> rebuilt (25 plumbers)", /rebuilt/.test(l) && (await idx())[0].k === 25, l);
++  await s.DB.prepare("UPDATE businesses SET ghl_id='qa0007m' WHERE ghl_id='qa0007'").run();
++  l = await hourly();
++  check("merge re-pointing a listing to the kept contact (same data) -> skipped", /skipped/.test(l), l);
++  // failed rebuild: last good index stays, retried next run
++  await s.DB.prepare("UPDATE businesses SET rat=4.9 WHERE ghl_id='qa0008'").run();
++  const before = await s.meta("best_index");
++  s.hooks.onAll = sql => { if (GROUP.test(sql)) throw new Error("simulated D1 error"); };
++  l = (await s.tick(), await hourly());
++  check("failed rebuild -> logged, last good index kept", /best-of index failed/.test(l) && (await s.meta("best_index")) === before, l);
++  s.hooks.onAll = null;
++  l = await hourly();
++  check("…retried next hourly run -> rebuilt", /rebuilt/.test(l), l);
++  // a change made while the index is being rebuilt stays pending
++  await s.DB.prepare("UPDATE businesses SET rat=4.8 WHERE ghl_id='qa0009'").run();
++  s.hooks.onAll = async sql => { if (GROUP.test(sql)) { s.hooks.onAll = null; await s.DB.prepare("UPDATE businesses SET sub='Plumber',rat=4.5,rev=8 WHERE ghl_id='qa0030'").run(); } };
++  l = await hourly();
++  check("rebuild during which another listing changes", /rebuilt/.test(l), l);
++  l = await hourly();
++  check("…that change is still pending: next run rebuilds again", /rebuilt/.test(l), l);
++  check("…and the index now includes it (26 plumbers)", (await idx())[0].k === 26, String((await idx())[0].k));
++  l = await hourly();
++  check("then quiet again -> skipped", /skipped/.test(l), l);
++  // missing index / missing counter / new code version
++  await s.DB.prepare("DELETE FROM meta WHERE k='best_index'").run();
++  l = await hourly();
++  check("index missing -> rebuilt", /rebuilt/.test(l), l);
++  await s.DB.prepare("UPDATE meta SET v=json_set(v,'$.build','v0-old') WHERE k='best_built'").run();
++  l = await hourly();
++  check("index built by another code version -> rebuilt", /rebuilt/.test(l), l);
++  await s.DB.prepare("UPDATE meta SET v=json_set(v,'$.at',0) WHERE k='best_built'").run();
++  l = await hourly();
++  check("index older than a day -> rebuilt", /rebuilt/.test(l), l);
++  await s.DB.prepare("DELETE FROM meta WHERE k='best_gen'").run();
++  l = await hourly(); const l2 = await hourly();
++  check("no change counter (site not migrated) -> rebuilds every hour, as before", /rebuilt/.test(l) && /rebuilt/.test(l2));
++  await s.admin("/admin/migrate");
++  check("migrate is repeatable (triggers created once)", (await s.count("SELECT COUNT(*) n FROM sqlite_master WHERE type='trigger' AND name LIKE 'best_gen_%'")) === 3);
++  await s.mf.dispose();
++}
++
+ console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
+ process.exit(failures ? 1 : 0);
+diff --git a/worker.js b/worker.js
+index 3fa337a..b4a17f3 100644
+--- a/worker.js
++++ b/worker.js
+@@ -1864,6 +1864,17 @@ async function migrate(DB, env) {
+     try {
+       await DB.prepare("CREATE TABLE IF NOT EXISTS merge_keep(ghl_id TEXT PRIMARY KEY, why TEXT DEFAULT '')").run();
+     } catch {}
++    // v17.09: change counter for the best-of index. D1 bumps meta.best_gen on every insert or delete of a listing and
++    // every real change to a column the index uses (rat, rev, sub, cs, hood) — whatever code path made it.
++    try {
++      await DB.prepare("INSERT OR IGNORE INTO meta(k,v) VALUES('best_gen','1')").run();
++      const bump = "UPDATE meta SET v=CAST(v AS INTEGER)+1 WHERE k='best_gen'";
++      await DB.prepare(`CREATE TRIGGER IF NOT EXISTS best_gen_ins AFTER INSERT ON businesses BEGIN ${bump}; END`).run();
++      await DB.prepare(`CREATE TRIGGER IF NOT EXISTS best_gen_del AFTER DELETE ON businesses BEGIN ${bump}; END`).run();
++      await DB.prepare(`CREATE TRIGGER IF NOT EXISTS best_gen_upd AFTER UPDATE OF rat,rev,sub,cs,hood ON businesses WHEN OLD.rat IS NOT NEW.rat OR OLD.rev IS NOT NEW.rev OR OLD.sub IS NOT NEW.sub OR OLD.cs IS NOT NEW.cs OR OLD.hood IS NOT NEW.hood BEGIN ${bump}; END`).run();
++    } catch (e) {
++      console.log("migrate: best_gen triggers failed: " + e.message);
++    }
+     // v17.04: one row per merged/left-alone duplicate pair, with a backup of the removed contact.
+     try {
+       await DB.prepare("CREATE TABLE IF NOT EXISTS merge_log(loser_id TEXT PRIMARY KEY, master_id TEXT, copy_id TEXT, keep_id TEXT, name TEXT DEFAULT '', contact_json TEXT DEFAULT '', notes_json TEXT DEFAULT '', transcript TEXT DEFAULT '', status TEXT, err TEXT DEFAULT '', at INTEGER)").run();
+@@ -9505,8 +9516,22 @@ const MONTH_YEAR = () => new Date().toLocaleDateString("en-US", {
+   timeZone: "America/New_York"
+ });
+ 
+-async function computeBestIndex(DB) {
+-  const rows = (await DB.prepare("SELECT cs,cat,sub,hood,COUNT(*) n FROM businesses WHERE rat>=4 AND rev>=5 AND sub<>'' GROUP BY cs,sub,hood").all()).results || [];
++// onlyIfChanged (the hourly cron): skip the rebuild when meta.best_gen (bumped by D1 triggers, see migrate) is the same
++// as when the stored index was built, with the same code version, less than a day ago. Missing counter, missing
++// index, new version or any change → rebuild. The counter is read BEFORE the listings, so a change made during a
++// rebuild leaves the stored gen behind and the next run rebuilds again; a failed rebuild writes nothing (the last good
++// index keeps being served) and is retried next hour. Returns null when skipped.
++async function computeBestIndex(DB, onlyIfChanged) {
++  let gen = null;
++  try {
++    const m = new Map(((await DB.prepare("SELECT k, CASE WHEN k='best_index' THEN '' ELSE v END v FROM meta WHERE k IN ('best_gen','best_built','best_index')").all()).results || []).map(r => [ r.k, r.v ]));
++    gen = m.has("best_gen") ? String(m.get("best_gen")) : null;
++    if (onlyIfChanged && gen != null && m.has("best_index") && m.has("best_built")) {
++      const b = JSON.parse(m.get("best_built"));
++      if (b.gen === gen && b.build === BUILD && Date.now() - b.at < 864e5) return null;
++    }
++  } catch {}
++  const rows =(await DB.prepare("SELECT cs,cat,sub,hood,COUNT(*) n FROM businesses WHERE rat>=4 AND rev>=5 AND sub<>'' GROUP BY cs,sub,hood").all()).results || [];
+   const types = new Map;
+   for (const r of rows) {
+     const slug = SL(r.sub);
+@@ -9539,10 +9564,11 @@ async function computeBestIndex(DB) {
+     });
+   }
+   out.sort((a, b) => b.k - a.k);
+-  await DB.prepare("INSERT INTO meta(k,v) VALUES('best_index',?1) ON CONFLICT(k) DO UPDATE SET v=?1").bind(JSON.stringify({
++  const put = DB.prepare("INSERT INTO meta(k,v) VALUES(?1,?2) ON CONFLICT(k) DO UPDATE SET v=?2");
++  await DB.batch([ put.bind("best_index", JSON.stringify({
+     at: Date.now(),
+     types: out
+-  })).run();
++  })), put.bind("best_built", JSON.stringify({ gen: gen, build: BUILD, at: Date.now() })) ]);
+   BEST.t = 0;
+   return out;
+ }
+@@ -9810,7 +9836,7 @@ function BESTCTA(idx, slug, hood) {
+   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
+ }
+ 
+-const BUILD = "v17.08-shared";
++const BUILD = "v17.09-shared";
+ 
+ const APP_COOKIE = "gl_app";
+ 
+@@ -9919,8 +9945,8 @@ const _export = {
+         console.log("cron Recently Claimed expiry failed: " + e.message);
+       }
+       if (hourly) try {
+-        const bi = await computeBestIndex(DB);
+-        console.log(`cron: best-of index rebuilt — ${bi.length} business types`);
++        const bi = await computeBestIndex(DB, true);
++        console.log(bi ? `cron: best-of index rebuilt — ${bi.length} business types` : "cron: best-of index unchanged — rebuild skipped");
+       } catch (e) {
+         console.log("cron best-of index failed: " + e.message);
+       }
+-- 
+2.43.0
+
