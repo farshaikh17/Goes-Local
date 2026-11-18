@@ -2275,6 +2275,14 @@ async function processImportBatch(env, DB, limit) {
   };
 }
 
+// Minutes the 5-minute cron waits after a successfully completed full GHL sync pass before it starts the next one.
+// Per site via the Variable CITY_SYNC_COOLDOWN_MIN (whole minutes, 5–1440); unset or invalid = 10, the old fixed wait.
+// v17.07 (CPU pilot, 18 Nov): Orlando only, 60.
+const SYNC_COOLDOWN_MIN = env => {
+  const n = parseInt(String(env && env.CITY_SYNC_COOLDOWN_MIN || "").trim(), 10);
+  return n >= 5 && n <= 1440 ? n : 10;
+};
+
 async function syncStep(env, DB, maxPages) {
   const t0 = Date.now();
   await loadCatMap(DB);
@@ -9800,7 +9808,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.06-shared";
+const BUILD = "v17.07-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -9926,13 +9934,19 @@ const _export = {
       } catch (e) {
         console.log("cron pending-email-invite batch failed: " + e.message);
       }
+      // GHL sync, last so a skipped or failed sync never stops the jobs above. The wait applies only to STARTING a new
+      // full pass: a pass in progress (sync:progress in KV) resumes every tick, and only a successfully completed pass
+      // writes synced_at, so a failed or partial pass never starts the wait. One aggregate line per tick
+      // (sync=started|resumed|completed|failed|skipped-cooldown) — counts only, never contact details.
+      let syncState = "started";
       try {
         const KV = KVOF(env);
         const inProgress = KV ? await KV.get("sync:progress") : null;
-        if (!inProgress) {
+        if (inProgress) syncState = "resumed"; else {
           const syn = await DB.prepare("SELECT v FROM meta WHERE k='synced_at'").first().catch(() => null);
-          if (syn && Date.now() - +syn.v < 10 * 60 * 1e3) {
-            console.log("cron: data fresh, skipping");
+          const waitMin = SYNC_COOLDOWN_MIN(env), ago = syn ? Date.now() - +syn.v : Infinity;
+          if (ago < waitMin * 60 * 1e3) {
+            console.log(`cron: sync=skipped-cooldown — last full pass completed ${Math.round(ago / 6e4)} min ago, wait ${waitMin} min`);
             return;
           }
         }
@@ -9942,9 +9956,12 @@ const _export = {
           d: null
         };
         SHELL_DIRTY = true;
-        console.log(r.done ? `cron: sync pass complete — ${r.count} listings, ${r.removed || 0} removed, in ${r.ms}ms` : `cron: sync in progress — fetched ${r.pagesFetched} more page(s) (${r.contactsThisCall} contacts), continuing next tick`);
+        // "changed" = listing rows written because they differed from what was stored (new listing, any listed field
+        // changed, or back after a missed pass); unchanged contacts are not written. Times are wall time, not CPU.
+        const counts = `${r.pagesFetched} page(s), ${r.contactsThisCall} contacts read, ${r.businessesWrittenThisCall} listings changed`;
+        console.log(r.done ? `cron: sync=completed (${syncState === "resumed" ? "pass resumed" : "single-tick pass"}) — ${counts}; ${r.count} listings, ${r.removed || 0} removed, wall ${r.ms}ms` : `cron: sync=${syncState} — ${counts}, wall ${r.ms}ms; continuing next tick`);
       } catch (e) {
-        console.log("cron sync failed: " + e.message);
+        console.log(`cron: sync=failed (${syncState}) — ` + String(e.message || e).replace(/\S+@\S+/g, "[email]").slice(0, 200));
       }
     })());
   },
