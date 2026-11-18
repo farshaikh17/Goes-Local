@@ -13,6 +13,9 @@
 **Live:** Orlando v17.07 (version eff5dfc9; CPU pilot, CITY_SYNC_COOLDOWN_MIN=60, confirmed skipping at 17:50 UTC —
 see docs/CPU-PILOT.md; 48-h comparison reminder set for 20 Nov 18:15 UTC). Miami v17.06 (bfaefe58). Others unchanged.
 
+**Before ANY bulk change (each merge batch, import, migration):** `node scripts/d1-restore-point.mjs <city> "<why>"`
+and commit docs/D1-RESTORE-POINTS.md. Restore steps and limits (GHL changes are not undone): docs/D1-RECOVERY.md.
+
 **Duplicate merge — Eric is building the next step in another chat:**
 - First Miami batch (20 pairs) ran 18 Nov: every GHL step done; the website step failed on live D1 (SQLITE_AUTH:
   `pragma_table_info` is refused on live D1, allowed locally). Repaired by hand for all 20 (changelog/v17.10.md);
