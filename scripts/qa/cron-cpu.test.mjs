@@ -77,7 +77,7 @@ function d1(sqlite) {
   class Stmt {
     constructor(sql, args = []) { this.sql = sql; this.args = args; }
     bind(...a) { return new Stmt(this.sql, a.map(conv)); }
-    _p() { return sqlite.prepare(this.sql); }
+    _p() { if (/pragma_\w+\s*\(/i.test(this.sql)) throw new Error("D1_ERROR: not authorized: SQLITE_AUTH"); return sqlite.prepare(this.sql); }   // like live D1
     async first(col) { const r = plain(this._p().all(...this.args)[0]) ?? null; return col && r ? r[col] : r; }
     async all() { return { results: this._p().all(...this.args).map(plain), success: true, meta: {} }; }
     async raw() { return this._p().all(...this.args).map(r => Object.values(r)); }
@@ -138,7 +138,8 @@ async function site(vars = {}) {
   const setMeta = (k, v) => DB.prepare("INSERT INTO meta(k,v) VALUES(?1,?2) ON CONFLICT(k) DO UPDATE SET v=?2").bind(k, String(v)).run();
   const count = async (sql = "SELECT COUNT(*) n FROM businesses", ...b) => ((await DB.prepare(sql).bind(...b).first()) || {}).n;
   const syncLine = ls => ls.find(l => /cron: sync=/.test(l)) || "";
-  return { mf, g, DB, KV, admin, tick, meta, setMeta, count, syncLine, logs };
+  const rawCols = n => sqlite.prepare(`PRAGMA table_info("${n}")`).all().map(r => r.name);
+  return { mf, g, DB, KV, admin, tick, meta, setMeta, count, syncLine, logs, rawCols };
 }
 
 const MIN = 6e4;
@@ -253,6 +254,24 @@ const MIN = 6e4;
     check(`invalid value ${JSON.stringify(bad)} falls back to 10 min`, /sync=started/.test(t.syncLine(l2)), t.syncLine(l2));
     await t.mf.dispose();
   }
+}
+
+// ================= v17.10: merge finds every table with a ghl_id column without pragma_table_info =================
+{
+  console.log("\n== v17.10: merge — tables re-pointed to the kept contact");
+  const s = await site({});
+  const src = fs.readFileSync(WORKER, "utf8");
+  const line = src.split("\n").find(l => /const tbls = .*sqlite_master/.test(l)) || "";
+  check("merge no longer uses pragma_table_info", line && !/pragma_/.test(line));
+  const sql = (/DB\.prepare\("([^"]+)"\)/.exec(line) || [])[1].replace(/\\\\/g, "\\");
+  const re = new RegExp((/\.filter\(t => \/(.+)\/i\.test/.exec(line) || [])[1], "i");
+  const got = ((await s.DB.prepare(sql).all()).results || []).filter(t => re.test(String(t.sql || ""))).map(t => t.name).sort();
+  // the real answer, from SQLite's own column list (allowed in the test, not on live D1)
+  const truth = (await s.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite%'").all()).results.map(t => t.name)
+    .filter(n => s.rawCols(n).includes("ghl_id")).sort();
+  check(`same tables as SQLite's column list (${truth.length})`, JSON.stringify(got) === JSON.stringify(truth), got.length + " vs " + truth.length + " " + truth.filter(t => !got.includes(t)).join(","));
+  check("includes businesses, claims, owner_pending, slug_redirects, merge_keep", ["businesses", "claims", "owner_pending", "slug_redirects", "merge_keep"].every(t => got.includes(t)));
+  await s.mf.dispose();
 }
 
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");

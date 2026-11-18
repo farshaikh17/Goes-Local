@@ -27,5 +27,8 @@ if (!src.includes('o.push("VERSION: " + BUILD)')) fail("/debug no longer prints 
 const leaks = [/G-6Q9XD0PSXP/, /G-4GYL8HMEGL/, /G-8ECDB32Y3W/, /orlandogoeslocal\.com/i, /WBkYBSVDnGUN7JKzWYtd/];
 for (const re of leaks) if (re.test(src)) fail(`city-specific value hardcoded in worker.js: ${re.source}`);
 
+// Live D1 refuses SQLite's table-valued pragma functions (SQLITE_AUTH) although local dev allows them (v17.10).
+if (/pragma_\w+\s*\(/i.test(src)) fail("worker.js uses a pragma_…() function — live D1 refuses it (SQLITE_AUTH); read sqlite_master.sql instead");
+
 if (bad) process.exit(1);
 console.log(v[0]);

@@ -2896,7 +2896,9 @@ async function mergePair(env, DB, copyId, keepId, dry) {
   await ghlNote(env, master.id, `Merged with a duplicate of this business (${loser.id}, removed). This contact was kept because it is ${plan.masterIs}. Its notes${transcript.length ? ", a transcript of its calls/texts/emails" : ""} and missing details were copied here.`);
   // 4 the site: the listing keeps its address; every D1 reference moves to the master
   try {
-    const tbls = (await DB.prepare("SELECT m.name FROM sqlite_master m WHERE m.type='table' AND EXISTS (SELECT 1 FROM pragma_table_info(m.name) WHERE name='ghl_id')").all()).results || [];
+    // v17.10: live D1 refuses pragma_table_info() (SQLITE_AUTH — the 18 Nov first batch failed here, local dev allows
+    // it); read the column from each table's CREATE statement instead (ALTER TABLE ADD COLUMN updates it too).
+    const tbls = (((await DB.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'").all()).results) || []).filter(t => /[(,]\s*"?ghl_id"?\s/i.test(String(t.sql || "")));
     const ops = [ DB.prepare("DELETE FROM dup_hidden WHERE ghl_id IN (?1,?2)").bind(copyId, master.id) ];
     if (masterIsCopy) ops.push(DB.prepare("DELETE FROM businesses WHERE ghl_id=?1").bind(master.id), DB.prepare("UPDATE businesses SET ghl_id=?1 WHERE ghl_id=?2").bind(master.id, loser.id));
     for (const t of tbls.map(r => r.name).filter(n => ![ "businesses", "dup_hidden", "merge_log" ].includes(n))) ops.push(DB.prepare(`UPDATE OR IGNORE "${t}" SET ghl_id=?1 WHERE ghl_id=?2`).bind(master.id, loser.id));
@@ -9808,7 +9810,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.07-shared";
+const BUILD = "v17.10-shared";
 
 const APP_COOKIE = "gl_app";
 
