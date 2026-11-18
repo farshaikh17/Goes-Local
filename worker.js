@@ -7969,7 +7969,7 @@ ${b.premium && b.photos && b.photos.length ? `<div class="blk"><h2>Photos</h2>\n
         const d = h2[k];
         return `<div class="r" data-hours-day="${k}"><span>${label}</span><span>${d ? fmtHM(d.o) + " – " + fmtHM(d.c) : "Closed"}</span></div>`;
       }).join("")}\n</div>\n<script>(function(){\nvar H=${SJ(h2)};\nvar parts=new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",weekday:"short",hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(new Date());\nvar wd={Mon:"mon",Tue:"tue",Wed:"wed",Thu:"thu",Fri:"fri",Sat:"sat",Sun:"sun"};\nvar day="",hh=0,mm=0;\nparts.forEach(function(p){if(p.type==="weekday")day=wd[p.value];if(p.type==="hour")hh=parseInt(p.value,10)%24;if(p.type==="minute")mm=parseInt(p.value,10)});\nvar nowMin=hh*60+mm;\nfunction toMin(v){var b=v.split(":");return parseInt(b[0],10)*60+parseInt(b[1],10)}\nvar order=["mon","tue","wed","thu","fri","sat","sun"];\nvar todayIdx=order.indexOf(day),open=false;\n[day,order[(todayIdx+6)%7]].forEach(function(dk,i){ // today, then yesterday (for spans past midnight)\n  var d=H[dk];if(!d)return;\n  var o=toMin(d.o),c=toMin(d.c),t=i===0?nowMin:nowMin+1440;\n  if(c<=o)c+=1440; // overnight hours (e.g. open 6pm, close 2am)\n  if(t>=o&&t<c)open=true});\ndocument.querySelectorAll("[data-open-badge],#glOpenBadge").forEach(function(b){b.textContent=open?"Open now":"Closed now";\n  b.style.background=open?"#E6F4EA":"#FDECEA";b.style.color=open?"#1E7E34":"#B3261E"});\nvar row=document.querySelector('[data-hours-day="'+day+'"]');\nif(row)row.style.fontWeight="700"\n})();<\/script>`;
-    })()}\n${b.owner_email ? `<div class="blk" id="enquiry"><h2>Send an enquiry</h2>\n<form method="POST" action="/api/lead">\n<input type="hidden" name="business" value="${E(b.name)}">\n<input type="hidden" name="ghlId" value="${E(b.id)}">\n<div class="fld2"><label for="qn">Your name *</label><input id="qn" name="name" required></div>\n<div class="fld2"><label for="qe">Your email *</label><input id="qe" name="email" type="email" required></div>\n<div class="fld2"><label for="qp">Your phone</label><input id="qp" name="phone" type="tel"></div>\n<div class="fld2"><label for="qd">What do you need?</label><textarea id="qd" name="details" placeholder="Tell them a bit about what you're looking for"></textarea></div>\n<button class="btn btn-p btn-w">Send enquiry</button>\n<p style="font-size:11px;color:${T.faint};text-align:center;margin:9px 0 0">${b.owner_email ? "Sent directly to the business." : "Our local team will pass your message on to the business."}</p>\n</form></div>` : LN2CONTACT(b)}\n<p style="font-size:13px;margin:12px 4px 0"><a rel="nofollow" href="/contact?topic=listing&amp;page=${encodeURIComponent("/" + b.cs + "/" + b.slug)}" style="color:${T.coral};font-weight:700">🚩 Report a problem with this listing →</a></p>\n</aside></div>\n${x.rank ? "" : x.bestCta || ""}
+    })()}\n${b.owner_email ? `<div class="blk" id="enquiry"><h2>Send an enquiry</h2>\n<form method="POST" action="/api/lead">\n<input type="hidden" name="business" value="${E(b.name)}">\n<input type="hidden" name="ghlId" value="${E(b.id)}">\n<div class="fld2"><label for="qn">Your name *</label><input id="qn" name="name" required></div>\n<div class="fld2"><label for="qe">Your email *</label><input id="qe" name="email" type="email" required></div>\n<div class="fld2"><label for="qp">Your phone</label><input id="qp" name="phone" type="tel"></div>\n<div class="fld2"><label for="qd">What do you need?</label><textarea id="qd" name="details" placeholder="Tell them a bit about what you're looking for"></textarea></div>\n<div aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden"><label for="qw">Leave this empty</label><input id="qw" name="website" tabindex="-1" autocomplete="off"></div>\n${S.tsKey ? `<div class="cf-turnstile" data-sitekey="${E(S.tsKey)}" data-action="enquiry" style="margin:4px 0 10px"></div><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>\n` : ""}<button class="btn btn-p btn-w">Send enquiry</button>\n<p style="font-size:11px;color:${T.faint};text-align:center;margin:9px 0 0">${b.owner_email ? "Sent directly to the business." : "Our local team will pass your message on to the business."}</p>\n</form></div>` : LN2CONTACT(b)}\n<p style="font-size:13px;margin:12px 4px 0"><a rel="nofollow" href="/contact?topic=listing&amp;page=${encodeURIComponent("/" + b.cs + "/" + b.slug)}" style="color:${T.coral};font-weight:700">🚩 Report a problem with this listing →</a></p>\n</aside></div>\n${x.rank ? "" : x.bestCta || ""}
 ${!b.premium && rel.length ? `<div class="blk ln2-simblk"><h2>${E(x.simTitle || "Similar businesses nearby")}</h2>\n<div class="ln2-sim">${rel.map(SIMROW).join("")}</div></div>` : ""}\n${x.isOwner ? `<div style="text-align:center;margin-top:26px;padding-top:22px;border-top:1px solid ${T.line}">
 <a class="btn btn-p btn-lg" href="/manage/hub?id=${encodeURIComponent(b.id)}">Manage your business</a>
 </div>` : ""}
@@ -9810,7 +9810,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.10-shared";
+const BUILD = "v17.11-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -14720,6 +14720,48 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         if (l.email) ctx.waitUntil(sendTplEmail(env, DB, l.email, "listing_received", { business: E(l.business || "your business") }, "", undefined, cid).catch(() => {}));
         return R2(NOTICE(d, "Thanks — we've got it", "Our local team reviews new submissions within one to two business days. We'll email you when your page is live.", "Back to the directory", "/"));
       }
+      // v17.11 (Eric, 18 Nov — a scanner sent "1", "98766", `1,()'".abcd` six times to Aquarius Lux's owner): guards
+      // before anything reaches GHL, the owner's inbox or phone.
+      {
+        const back = l.ghlId ? await (async () => { try { const r = await DB.prepare("SELECT cs,slug FROM businesses WHERE ghl_id=?1").bind(String(l.ghlId)).first(); return r ? `/${r.cs}/${r.slug}#enquiry` : "/"; } catch { return "/"; } })() : "/";
+        const sentPage = () => R2(NOTICE(d, "Enquiry sent", `Your message has been sent to ${l.business || "the business"}. They'll be in touch directly.`, "Back to the directory", "/"));
+        const nope = (title, msg, code) => R2(NOTICE(d, title, msg, "Go back", back), code || 400);
+        // 1 hidden field only bots fill: they see the usual thank-you, nothing is sent
+        if (String(l.website || "").trim()) return sentPage();
+        // 2 the listing must be a real claimed listing on this site; its name comes from our records
+        const biz = l.ghlId && DB ? await DB.prepare("SELECT name FROM businesses WHERE ghl_id=?1 AND coalesce(owner_email,'')<>''").bind(String(l.ghlId)).first().catch(() => null) : null;
+        if (!biz) return nope("We couldn't send that", "This business can't receive enquiries through the site right now. Please contact them using the details on their page.");
+        l.business = biz.name;
+        // 3 real details: a name with letters, a proper email, and a message or a phone number
+        l.name = String(l.name || "").trim().slice(0, 80);
+        l.email = NRM(String(l.email || "")).slice(0, 120);
+        l.phone = String(l.phone || "").trim().slice(0, 30);
+        l.details = String(l.details || "").trim().slice(0, 3000);
+        const phoneOk = l.phone.replace(/\D/g, "").length >= 10;
+        if (!/\p{L}.*\p{L}/u.test(l.name) || BADMAIL(l.email) || !(l.details.replace(/[^\p{L}\p{N}]/gu, "").length >= 10 || phoneOk) || (l.phone && !phoneOk)) return nope("Please check your details", "Please add your name, a working email address, and a short message (or a phone number) so the business can reply.");
+        // 4 "I'm not a robot" (Cloudflare Turnstile), when the site has its keys
+        if (S.tsKey && env.TURNSTILE_SECRET) {
+          const tok = String(l["cf-turnstile-response"] || "");
+          let ok = false, reached = false;
+          if (tok) try {
+            const fd = new FormData();
+            fd.append("secret", env.TURNSTILE_SECRET);
+            fd.append("response", tok);
+            if (leadIp) fd.append("remoteip", leadIp);
+            const vr = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: fd });
+            reached = vr.ok;
+            const vj = vr.ok ? await vr.json() : {};
+            ok = !!vj.success;
+          } catch (e) {
+            console.log("turnstile check unreachable: " + e.message);
+          }
+          // Cloudflare's check itself down → let the enquiry through (the limits below still apply) rather than lose it
+          if (!ok && (!tok || reached)) return nope("Please confirm you're not a robot", "Tick the “Verify you are human” box above the Send button, then send your enquiry again.");
+        }
+        // 5 limits: 3 an hour per visitor address, 10 an hour per listing, 60 an hour for the whole site
+        const hr = new Date().toISOString().slice(0, 13);
+        if (!await rateOk(env, "enq:" + (leadIp || "0"), 3) || !await rateOk(env, "enq-biz:" + l.ghlId + ":" + hr, 10) || !await rateOk(env, "enq-all:" + hr, 60)) return nope("Please slow down", "We've had a lot of enquiries from you or for this business in the last hour. Please try again a little later, or contact the business using the details on their page.", 429);
+      }
       const cid = l.email ? await ghlFindOrCreateContact(env, l.email, {
         name: l.name || "",
         phone: l.phone || ""
@@ -16052,6 +16094,8 @@ function applyCityConfig(env) {
   if (env.CITY_DOMAIN) S.dom = env.CITY_DOMAIN;
   if (env.CITY_GA_IDS) S.gaIds = env.CITY_GA_IDS.split(",").map(s => s.trim()).filter(Boolean);
   S.metaPixel = String(env.CITY_META_PIXEL || "").replace(/\D/g, "").slice(0, 20);
+  // v17.11: Turnstile is on only when the site has BOTH the public site key (Variable) and the secret (Secret).
+  S.tsKey = env.TURNSTILE_SECRET ? String(env.TURNSTILE_SITE_KEY || "").replace(/[^\w-]/g, "").slice(0, 80) : "";
   S.metaDomain = String(env.CITY_META_DOMAIN_VERIFY || "").replace(/[^a-z0-9]/gi, "").slice(0, 64);
   if (env.CITY_DOMAIN) AUTH.SITE_URL = env.CITY_DOMAIN;
   if (env.CITY_FROM_EMAIL) AUTH.FROM_EMAIL = env.CITY_FROM_EMAIL;
@@ -16139,7 +16183,7 @@ async function edgeKey(u, env) {
   k.searchParams.set("__g", await cacheGen(env));
   // Settings printed into every page's <head> (Meta Pixel, Meta domain code, Google Analytics) are part of the key, so
   // changing them in Cloudflare serves fresh pages at once (Eric, 3 Nov: saved pages kept the old Pixel).
-  k.searchParams.set("__c", [ S.metaPixel, S.metaDomain, (S.gaIds || []).join(",") ].join("|"));
+  k.searchParams.set("__c", [ S.metaPixel, S.metaDomain, (S.gaIds || []).join(","), S.tsKey ].join("|"));
   return new Request(k.toString(), {
     method: "GET"
   });
@@ -16239,7 +16283,9 @@ export default {
     // v16.92 (Eric: "my boss needs this to work"): also www.facebook.com scripts/frames and graph.facebook.com, which
     // Meta's event setup tool loads into the page.
     const fbS = S.metaPixel ? " https://connect.facebook.net https://www.facebook.com" : "", fbC = S.metaPixel ? " https://connect.facebook.net https://www.facebook.com https://*.facebook.com https://graph.facebook.com" : "", fbF = S.metaPixel ? " https://www.facebook.com https://*.facebook.com" : "";
-    h.set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://cdn.jsdelivr.net https://static.cloudflareinsights.com" + fbS + "; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; frame-src https://www.google.com" + fbF + "; connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com https://analytics.google.com https://*.analytics.google.com https://www.googletagmanager.com https://www.google.com https://cloudflareinsights.com" + fbC + "; media-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; manifest-src 'self'; worker-src 'self'");
+    // v17.11: Cloudflare Turnstile ("I'm not a robot") on the enquiry form, only when the site has TURNSTILE_SITE_KEY.
+    const ts = S.tsKey ? " https://challenges.cloudflare.com" : "";
+    h.set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://cdn.jsdelivr.net https://static.cloudflareinsights.com" + fbS + ts + "; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; frame-src https://www.google.com" + fbF + ts + "; connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com https://analytics.google.com https://*.analytics.google.com https://www.googletagmanager.com https://www.google.com https://cloudflareinsights.com" + fbC + ts + "; media-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; manifest-src 'self'; worker-src 'self'");
     h.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     h.set("X-Frame-Options", "DENY");
     h.set("X-Content-Type-Options", "nosniff");

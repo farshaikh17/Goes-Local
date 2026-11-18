@@ -36,8 +36,15 @@ function fakeGhl() {
   g.reset = (n = g.pages * g.perPage) => { g.contacts.clear(); g.order = []; for (let i = 1; i <= n; i++) { const c = mk(i); g.contacts.set(c.id, c); g.order.push(c.id); } };
   g.reset();
   g.mk = mk;
+  g.calls.log = [];
   g.handler = async req => {
     const u = new URL(req.url);
+    g.calls.log.push(req.method + " " + u.origin + u.pathname);
+    if (u.href === "https://challenges.cloudflare.com/turnstile/v0/siteverify") {   // fake Cloudflare Turnstile
+      const tok = String((await req.formData()).get("response") || "");
+      if (tok === "down") return new Response("unavailable", { status: 503 });
+      return new Response(JSON.stringify({ success: tok === "good" }), { headers: { "content-type": "application/json" } });
+    }
     if (u.origin !== API) { g.calls.other++; return new Response("{}", { status: 200, headers: { "content-type": "application/json" } }); }
     const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
     if (/\/locations\/[^/]+\/customFields$/.test(u.pathname)) {
@@ -103,6 +110,7 @@ function kv() {
 
 let siteNo = 0;
 const realFetch = globalThis.fetch, realLog = console.log;
+globalThis.HTMLRewriter ??= class { on() { return this; } onDocument() { return this; } transform(r) { return r; } };   // pass-through stand-in
 globalThis.caches = { default: { match: async () => undefined, put: async () => {}, delete: async () => false }, open: async () => globalThis.caches.default };
 async function site(vars = {}) {
   const g = fakeGhl();
@@ -139,7 +147,9 @@ async function site(vars = {}) {
   const count = async (sql = "SELECT COUNT(*) n FROM businesses", ...b) => ((await DB.prepare(sql).bind(...b).first()) || {}).n;
   const syncLine = ls => ls.find(l => /cron: sync=/.test(l)) || "";
   const rawCols = n => sqlite.prepare(`PRAGMA table_info("${n}")`).all().map(r => r.name);
-  return { mf, g, DB, KV, admin, tick, meta, setMeta, count, syncLine, logs, rawCols };
+  const post = async (p, fields, ip = "127.0.0.1") => run(async ctx => { const r = await mod.default.fetch(req(p, { method: "POST", redirect: "manual", body: new URLSearchParams(fields), headers: { "cf-connecting-ip": ip } }), env, ctx); return { status: r.status, text: await r.text(), headers: r.headers }; });
+  const get = async p => run(async ctx => { const r = await mod.default.fetch(req(p), env, ctx); return { status: r.status, text: await r.text(), headers: r.headers }; });
+  return { mf, g, DB, KV, admin, tick, meta, setMeta, count, syncLine, logs, rawCols, post, get };
 }
 
 const MIN = 6e4;
@@ -272,6 +282,65 @@ const MIN = 6e4;
   check(`same tables as SQLite's column list (${truth.length})`, JSON.stringify(got) === JSON.stringify(truth), got.length + " vs " + truth.length + " " + truth.filter(t => !got.includes(t)).join(","));
   check("includes businesses, claims, owner_pending, slug_redirects, merge_keep", ["businesses", "claims", "owner_pending", "slug_redirects", "merge_keep"].every(t => got.includes(t)));
   await s.mf.dispose();
+}
+
+// ================= v17.11: listing enquiry form spam guards =================
+{
+  console.log("\n== v17.11: enquiry form (bot trap, real details, limits, real listings, Turnstile)");
+  const s = await site({ TURNSTILE_SITE_KEY: "0xQA-site-key", TURNSTILE_SECRET: "qa-secret" });
+  await s.tick(); await s.tick();
+  await s.DB.prepare("UPDATE businesses SET owner_email='owner@qa-owner.example', claimed=1 WHERE ghl_id='qa0001'").run();
+  const row = await s.DB.prepare("SELECT cs,slug FROM businesses WHERE ghl_id='qa0001'").first();
+  const page = await s.get(`/${row.cs}/${row.slug}`);
+  check("claimed listing page shows the enquiry form with the robot check", page.status === 200 && /id="enquiry"/.test(page.text) && /class="cf-turnstile" data-sitekey="0xQA-site-key"/.test(page.text), String(page.status));
+  check("…and the hidden bot-trap field", /name="website" tabindex="-1"/.test(page.text));
+  check("page security header allows Cloudflare's check", /script-src[^;]*challenges\.cloudflare\.com/.test(page.headers.get("content-security-policy") || "") && /frame-src[^;]*challenges\.cloudflare\.com/.test(page.headers.get("content-security-policy") || ""));
+  const good = { business: "Fake Name From Form", ghlId: "qa0001", name: "Maria López", email: "maria@qa-visitor.example", phone: "", details: "Looking for a quote for next week please", "cf-turnstile-response": "good" };
+  const sent = () => s.g.calls.log.filter(x => /\/contacts\/qa0001\/notes$/.test(x)).length;
+  let n0 = sent(), r;
+  const tries = [
+    ["scanner junk (name 1, email 1)", { ...good, name: "1", email: "1" }, 400, /check your details/],
+    ["SQL-style junk", { ...good, name: "1", email: "1,()'\".abcd" }, 400, /check your details/],
+    ["no message and no phone", { ...good, details: "hi" }, 400, /check your details/],
+    ["phone that isn't a phone", { ...good, details: "", phone: "98766" }, 400, /check your details/],
+    ["robot check not done", { ...good, "cf-turnstile-response": "" }, 400, /not a robot/],
+    ["robot check failed", { ...good, "cf-turnstile-response": "bad" }, 400, /not a robot/],
+    ["listing that isn't claimed", { ...good, ghlId: "qa0002" }, 400, /can't receive enquiries/],
+    ["made-up listing id", { ...good, ghlId: "nope123" }, 400, /can't receive enquiries/],
+  ];
+  let ipn = 10;
+  for (const [what, f, code, re] of tries) {
+    r = await s.post("/api/lead", f, "10.0.0." + (ipn++));
+    check(`refused: ${what}`, r.status === code && re.test(r.text) && sent() === n0, `${r.status}`);
+  }
+  r = await s.post("/api/lead", { ...good, website: "http://spam.example" }, "10.0.1.1");
+  check("bot trap filled -> shows 'sent', nothing reaches GHL or the owner", r.status === 200 && /Enquiry sent/.test(r.text) && sent() === n0);
+  r = await s.post("/api/lead", good, "10.0.2.1");
+  check("real enquiry goes through (note on the owner's contact)", /Enquiry sent|sent/i.test(r.text) && sent() === n0 + 1, `${r.status}`);
+  const lastNote = s.g.calls.log.length;
+  check("business name comes from our records, not the form", !s.logs.join("\n").includes("Fake Name From Form"));
+  void lastNote;
+  r = await s.post("/api/lead", { ...good, name: "José Ñúñez", details: "", phone: "+1 555 010 2233" }, "10.0.2.2");
+  check("accented name + phone only (no message) is fine", sent() === n0 + 2, `${r.status}`);
+  r = await s.post("/api/lead", { ...good, "cf-turnstile-response": "down" }, "10.0.2.3");
+  check("Cloudflare's check unreachable -> enquiry still goes through", sent() === n0 + 3, `${r.status}`);
+  for (let i = 0; i < 3; i++) await s.post("/api/lead", good, "10.0.3.1");
+  r = await s.post("/api/lead", good, "10.0.3.1");
+  check("4th enquiry in an hour from one address -> 'Please slow down'", r.status === 429 && /slow down/.test(r.text), String(r.status));
+  for (let i = 0; i < 6; i++) await s.post("/api/lead", good, "10.0.4." + i);
+  r = await s.post("/api/lead", good, "10.0.5.1");
+  check("11th enquiry in an hour to one listing -> refused", r.status === 429, String(r.status));
+  await s.mf.dispose();
+  const t = await site({});                                      // a site without the Turnstile keys
+  await t.tick(); await t.tick();
+  await t.DB.prepare("UPDATE businesses SET owner_email='owner@qa-owner.example', claimed=1 WHERE ghl_id='qa0001'").run();
+  const row2 = await t.DB.prepare("SELECT cs,slug FROM businesses WHERE ghl_id='qa0001'").first();
+  const p2 = await t.get(`/${row2.cs}/${row2.slug}`);
+  check("site without the keys: no robot check on the page, no extra security host", !/cf-turnstile/.test(p2.text) && !/challenges\.cloudflare/.test(p2.headers.get("content-security-policy") || ""));
+  const before = t.g.calls.log.filter(x => /\/contacts\/qa0001\/notes$/.test(x)).length;
+  await t.post("/api/lead", { ...good, "cf-turnstile-response": "" }, "10.9.0.1");
+  check("…real enquiry still goes through without it", t.g.calls.log.filter(x => /\/contacts\/qa0001\/notes$/.test(x)).length === before + 1);
+  await t.mf.dispose();
 }
 
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
