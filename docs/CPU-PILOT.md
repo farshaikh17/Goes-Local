@@ -6,6 +6,12 @@ Live before the pilot (checked 18 Nov 17:06 UTC): Orlando version **3b485c9a-e98
 (v17.06-shared, commit 1d16f3d = repo HEAD then), Miami bfaefe58-fede-4669-8013-c75354224891 (v17.06). Both cron
 `*/5 * * * *`; `check-live` matched. Orlando had no CITY_SYNC_COOLDOWN_MIN.
 
+## Live (Eric: "Go ahead, put v17.07 live on Orlando", 18 Nov)
+- 17:4x UTC step 1: v17.07 code → version **43d5f414-c964-4eb0-9089-3103cc53a6e4** (wait still 10 min).
+- 17:44 UTC step 2: CITY_SYNC_COOLDOWN_MIN=60 → version **eff5dfc9-fb65-4064-b276-75c072a4731b**. check-live OK (18
+  Variables kept + new one). Browser check OK (home, category, best, blog, contact, search, a listing; no JS errors).
+- Miami untouched (bfaefe58, v17.06). 48-h comparison window: 2026-11-18 18:00 → 2026-11-20 18:00 UTC.
+
 ## Baseline — 2026-11-16 17:00 → 2026-11-18 17:00 UTC (see changelog/v17.07.md)
 Scheduled: Orlando 568 runs, 669,538 CPU ms, 1,178.8 ms/run, 0 failed · Miami 573, 895,728, 1,563.2, 0 failed.
 HTTP (separate): Orlando 12,736 req / 339,790 ms · Miami 50,405 / 1,014,141. Source: GraphQL
