@@ -8575,6 +8575,21 @@ function sync(){if(!same.checked)return;wk.forEach(function(k){var o=el("hoff",k
 function show(){wk.forEach(function(k){var r=row(k);if(r)r.classList.toggle("ml-hide",same.checked)});var t=row("mon").querySelector("span");if(t)t.textContent=same.checked?"Monday – Friday":"Monday"}
 f.addEventListener("submit",function(){dirty=false;if(same&&row("mon"))sync()});
 if(same&&row("mon")&&wk.every(function(k){return row(k)})){same.checked=wk.every(eq);show();same.addEventListener("change",function(){sync();show()});["hopen_mon","hclose_mon","hoff_mon"].forEach(function(n){var x=f.querySelector('[name="'+n+'"]');if(x)x.addEventListener("change",sync)})}else if(same){same.parentElement.style.display="none"}
+/* v17.11 (Komal Med Spa, 18 Nov): owners picked a photo, pressed the big Save, and the photo was left behind. Now a picked
+   photo uploads by itself; if the owner also has unsaved edits, the big Save uploads the photo first, then saves. */
+var sec=document.getElementById("sec-photos");
+if(sec){var slots=[].slice.call(sec.querySelectorAll('form[action="/manage/edit/slot"][enctype]'));
+var picked=function(sf){var i=sf.querySelector('input[type=file]');return !!(i&&i.files&&i.files.length)};
+slots.forEach(function(sf){var inp=sf.querySelector('input[type=file]'),btn=sf.querySelector("button");if(!inp)return;
+inp.addEventListener("change",function(){if(!picked(sf))return;
+if(dirty){if(btn)btn.textContent="Will upload when you save";st.textContent="Press Save to save your changes and upload your photo";return}
+if(btn){btn.disabled=true;btn.textContent="Uploading…"}sf.submit()})});
+f.addEventListener("submit",function(e){var pend=slots.filter(picked);if(!pend.length||f.getAttribute("data-photos-done"))return;e.preventDefault();dirty=true;
+st.textContent="Uploading your photo"+(pend.length>1?"s":"")+"…";bar.classList.add("dirty");
+(async function(){for(var i=0;i<pend.length;i++){var r;try{r=await fetch("/manage/edit/slot",{method:"POST",body:new FormData(pend[i]),credentials:"same-origin"})}catch(x){r=null}
+if(!r||!r.ok||/[?&]l?err=/.test(r.url)){st.textContent="Your photo couldn't be uploaded, so nothing was saved yet. Please try again, or use a smaller photo.";return}
+var i2=pend[i].querySelector('input[type=file]');if(i2)i2.value=""}
+f.setAttribute("data-photos-done","1");dirty=false;if(f.requestSubmit)f.requestSubmit();else f.submit()})()})}
 })();<\/script>`;
 };
 
