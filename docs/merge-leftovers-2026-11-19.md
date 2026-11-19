@@ -1,13 +1,13 @@
-# Duplicate merge — leftovers (final, 19 Nov 2026 night)
+# Duplicate merge — final (19 Nov 2026, night)
 
-Orlando: nothing left (849 merged). Miami: 10,468 merged; 3 pairs left.
+Nothing is left to merge in Miami or Orlando.
 
-## Miami — 3 pairs: both contacts hold their own open deal
-Merging deletes one contact and its deal, and GHL cannot move a deal to another contact. A person decides which deal
-stays (or merges in the GHL screen). Nothing was changed on these.
-
-| Business | Copy contact | Kept listing contact | Deal on the copy | Deal on the listing contact |
-|---|---|---|---|---|
-| Mr Jeff Cleaners | k2qTyq7cPth0ZzyIbZMy | lUvAzLdECFTcfNsq2yzb | open, 40%, newer (12 Oct) | open, 80%, further along (7 Oct) |
-| United Janitors - Commercial Cleaning | TcodOuLmsIF6hNAZVLJ6 | BefmDD9qpuoUDYWiRCWB | open, 40% | open, 40% (listed as "Casa Pristine") |
-| Centre for Braces | 8k0l0kVhuPFKnP4znS61 | rhX6imz3e327OgMo7X0Y | open, 40% | open, 40% |
+- **Orlando:** 849 merged, 0 left.
+- **Miami:** 10,468 merged, 0 left. The last 3 pairs (Mr Jeff Cleaners, United Janitors, Centre for Braces — both contacts
+  held their own open deal) were merged by hand in GHL by Eric; the site already follows the surviving contacts.
+- **Tags:** the "duplicate" tag was left on 14 kept Miami contacts (12 from automatic merges where the tag removal did not
+  stick, 2 carried over by the manual merges). Removed 19 Nov night; Miami now has 0 contacts with the tag.
+- **Orlando tag check:** 2 contacts "TruGreen Lawn Care" still carry the tag; they are not listings and not in the merge
+  queue (probably hidden by the competitor or area rules) — left alone.
+- **Cause to fix later:** `ghlRemoveTag` ignores a failed call, so under heavy parallel load the "duplicate" tag can stay on a
+  kept contact. Re-check with a GHL search for tag "duplicate" after any big merge run.
