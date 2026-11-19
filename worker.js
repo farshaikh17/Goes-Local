@@ -2846,8 +2846,16 @@ async function mergePair(env, DB, copyId, keepId, dry) {
   try {
     dealHolders = new Set(((await DB.prepare("SELECT ghl_id FROM merge_keep WHERE ghl_id IN (?1,?2)").bind(a.id, b.id).all()).results || []).map(r => r.ghl_id));
   } catch {}
-  if (dealHolders.size === 2) return { copyId, keepId, name: b.companyName || "", status: "manual", reason: "both contacts hold a deal (opportunity)" };
-  if (dealHolders.has(b.id)) masterIsCopy = true; else if (dealHolders.has(a.id)) masterIsCopy = false;
+  // v17.12: the contact of a claimed listing (an owner has signed up — claims, owner_pending or businesses.claimed) is protected
+  // the same way: it is the one kept, so the owner's login and listing never move. If a deal holder and an owner's contact
+  // are different contacts, or both are an owner's, a person decides.
+  let ownerHolders = new Set();
+  try {
+    ownerHolders = new Set(((await DB.prepare("SELECT ghl_id FROM claims WHERE ghl_id IN (?1,?2) UNION SELECT ghl_id FROM owner_pending WHERE ghl_id IN (?1,?2) UNION SELECT ghl_id FROM businesses WHERE claimed=1 AND ghl_id IN (?1,?2)").bind(a.id, b.id).all()).results || []).map(r => r.ghl_id));
+  } catch {}
+  const protect = new Set([ ...dealHolders, ...ownerHolders ]);
+  if (protect.size === 2) return { copyId, keepId, name: b.companyName || "", status: "manual", reason: ownerHolders.size ? "both contacts hold a deal or belong to a listing owner" : "both contacts hold a deal (opportunity)" };
+  if (protect.has(b.id)) masterIsCopy = true; else if (protect.has(a.id)) masterIsCopy = false;
   const master = masterIsCopy ? b : a, loser = masterIsCopy ? a : b;
   // Never delete a contact that has opportunities or appointments.
   const [opp, appt] = await Promise.all([ ghlJson(env, `/opportunities/search?locationId=${env.GHL_LOCATION_ID}&contactId=${loser.id}&limit=1&status=all`), ghlJson(env, `/contacts/${loser.id}/appointments`) ]);
@@ -9834,7 +9842,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.11-shared";
+const BUILD = "v17.12-shared";
 
 const APP_COOKIE = "gl_app";
 
