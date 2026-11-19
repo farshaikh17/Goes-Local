@@ -11,14 +11,17 @@
 ## Status 19 Nov 2026 evening — duplicate merge finished (read first)
 
 - **Live:** Orlando and Miami on v17.11-shared (v17.10 fix + v17.11 "run in groups" — changelog/v17.11.md). Tampa/states unchanged.
-- **Merged:** Orlando 827 pairs, Miami 10,307 pairs (all copies of each business now one GHL contact; backups in `merge_log`).
-  Miami ran 6 groups at once (`POST /admin/merge?n=10&part=P&of=6`, one run per part) at ~2,400/hour after GHL slowed to
-  ~340/hour one at a time. `merge_auto` stays OFF; the pair queue (`dup_hidden`) is only the leftovers.
-- **Left on purpose / for a person:** `docs/merge-leftovers-2026-11-19.md` — Orlando 24, Miami 168 (162+24 claimed
-  listings/owner records held back so no owner login is touched; 3 pairs where both contacts hold a deal; 2 whose listing
-  contact is missing in GHL; 1 live sales contact whose copy GHL would not delete: Estevez General Painting).
-- **Before running more merges:** hold back pairs whose kept listing is claimed or has an owner record (insert them into
-  `merge_log` as status 'skip'); the merge itself does not check this. Never run two runs on the same part at once.
+- **Merged:** Orlando 849 pairs (nothing left), Miami 10,468 pairs (all copies of each business are now one GHL contact; backups in
+  `merge_log`). Miami ran 6 groups at once (`POST /admin/merge?n=10&part=P&of=6`, one run per part). `merge_auto` stays OFF;
+  the pair queue (`dup_hidden`) holds only the leftovers (new duplicates the sync finds later still queue there).
+- **Claimed listings (v17.12):** a contact in `claims`, `owner_pending` or the claimed listing's contact is always the one
+  kept. Tested live on Primos Pressure Washing and Mega Bee Rescues & Pest Control (20 Nov), then the held-back 186 pairs
+  were merged the same way; claimed counts unchanged (Miami 285, Orlando 111), no claim/owner row left on a deleted contact.
+- **Left for a person:** `docs/merge-leftovers-2026-11-19.md` — Miami only, 3 pairs where both contacts hold their own
+  open deal (Mr Jeff Cleaners, United Janitors, Centre for Braces); a person picks the deal to keep.
+- **Finished by hand 19 Nov night:** Estevez (copy deleted in GHL, no deals), 2 Tires Plus copies (stale 'skip' rows
+  cleared), Martin (owner_pending row moved to the kept contact — same owner email), ACE Clean Exteriors (its 2 claims,
+  same owner, moved to the kept claimed contact).
 - **CPU pilot note:** the merges ran on 18–19 Nov (mostly Miami), inside the 20 Nov CPU comparison window, so Miami's
   numbers include merge requests; Orlando and Miami were also redeployed (v17.10, v17.11) in that window.
 
