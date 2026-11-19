@@ -8,7 +8,21 @@
 
 > **Status updates since the handoff** are tracked in `docs/DEPLOY.md` (deploy setup) and `changelog/`.
 
-## Status 18 Nov 2026 evening (read first — handover to the next chat)
+## Status 19 Nov 2026 evening — duplicate merge finished (read first)
+
+- **Live:** Orlando and Miami on v17.11-shared (v17.10 fix + v17.11 "run in groups" — changelog/v17.11.md). Tampa/states unchanged.
+- **Merged:** Orlando 827 pairs, Miami 10,307 pairs (all copies of each business now one GHL contact; backups in `merge_log`).
+  Miami ran 6 groups at once (`POST /admin/merge?n=10&part=P&of=6`, one run per part) at ~2,400/hour after GHL slowed to
+  ~340/hour one at a time. `merge_auto` stays OFF; the pair queue (`dup_hidden`) is only the leftovers.
+- **Left on purpose / for a person:** `docs/merge-leftovers-2026-11-19.md` — Orlando 24, Miami 168 (162+24 claimed
+  listings/owner records held back so no owner login is touched; 3 pairs where both contacts hold a deal; 2 whose listing
+  contact is missing in GHL; 1 live sales contact whose copy GHL would not delete: Estevez General Painting).
+- **Before running more merges:** hold back pairs whose kept listing is claimed or has an owner record (insert them into
+  `merge_log` as status 'skip'); the merge itself does not check this. Never run two runs on the same part at once.
+- **CPU pilot note:** the merges ran on 18–19 Nov (mostly Miami), inside the 20 Nov CPU comparison window, so Miami's
+  numbers include merge requests; Orlando and Miami were also redeployed (v17.10, v17.11) in that window.
+
+## Status 18 Nov 2026 evening (older — handover to the next chat)
 
 **Live:** Orlando v17.07 (version eff5dfc9; CPU pilot, CITY_SYNC_COOLDOWN_MIN=60, confirmed skipping at 17:50 UTC —
 see docs/CPU-PILOT.md; 48-h comparison reminder set for 20 Nov 18:15 UTC). Miami v17.06 (bfaefe58). Others unchanged.

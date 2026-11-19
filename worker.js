@@ -2773,7 +2773,13 @@ const SAMENAME = (a, b) => {
 const MERGE_BATCH = 8;
 
 async function ghlJson(env, path, init) {
-  const r = await fetch(API + path, { ...init || {}, headers: { ...H(env), "Content-Type": "application/json", ...(init && init.headers) || {} } });
+  let r;
+  // v17.11: several merge runs at once can meet GHL's rate limit (429) — wait and try again instead of failing a half-done merge
+  for (let tries = 0; ; tries++) {
+    r = await fetch(API + path, { ...init || {}, headers: { ...H(env), "Content-Type": "application/json", ...(init && init.headers) || {} } });
+    if (r.status !== 429 || tries >= 3) break;
+    await new Promise(res => setTimeout(res, 1500 * (tries + 1)));
+  }
   let j = null;
   try { j = await r.json(); } catch {}
   return { ok: r.ok, status: r.status, j };
@@ -2813,8 +2819,20 @@ async function mergeTranscript(env, cid) {
   return lines;
 }
 
+// v17.11: ghlGetContact returns null for ANY failure, so a rate-limited read looked like "contact gone". Here only a real
+// "not found" (GHL answers 400/404) counts as gone; a busy or failing GHL throws and the pair is retried later.
+async function mergeGetContact(env, id) {
+  for (let tries = 0; ; tries++) {
+    const r = await ghlJson(env, `/contacts/${id}`);
+    if (r.ok) return r.j && r.j.contact || null;
+    if (r.status === 404 || r.status === 400 && /not found/i.test(JSON.stringify(r.j || ""))) return null;
+    if (tries >= 3) throw new Error("contact read " + r.status);
+    await new Promise(res => setTimeout(res, 1500 * (tries + 1)));
+  }
+}
+
 async function mergePair(env, DB, copyId, keepId, dry) {
-  const [a, b] = await Promise.all([ ghlGetContact(env, keepId), ghlGetContact(env, copyId) ]);
+  const [a, b] = await Promise.all([ mergeGetContact(env, keepId), mergeGetContact(env, copyId) ]);
   if (!b) {
     if (!dry) await DB.prepare("DELETE FROM dup_hidden WHERE ghl_id=?1").bind(copyId).run().catch(() => {});
     return { copyId, keepId, status: "copy-gone" };
@@ -2885,7 +2903,8 @@ async function mergePair(env, DB, copyId, keepId, dry) {
   for (let i = 0; i < transcript.length; i += 60) await ghlNote(env, master.id, `[Merged from duplicate contact] Calls, texts and emails${transcript.length > 60 ? ` (part ${i / 60 + 1} of ${Math.ceil(transcript.length / 60)})` : ""}:\n` + transcript.slice(i, i + 60).join("\n"));
   // 3 delete the other contact, then give the master its email/phone
   const del = await ghlJson(env, `/contacts/${loser.id}`, { method: "DELETE" });
-  if (!del.ok && del.status !== 404) return fail("delete " + del.status);
+  // GHL answers 400 "Contact not found" for a contact that is already gone (v17.11: counts as deleted, like 404)
+  if (!del.ok && del.status !== 404 && !(del.status === 400 && /not found/i.test(JSON.stringify(del.j || "")))) return fail("delete " + del.status);
   if (Object.keys(later).length) {
     await new Promise(res => setTimeout(res, 800));
     const r = await ghlJson(env, `/contacts/${master.id}`, { method: "PUT", body: JSON.stringify(later) });
@@ -2911,8 +2930,12 @@ async function mergePair(env, DB, copyId, keepId, dry) {
   return plan;
 }
 
-async function mergeBatch(env, DB, max, dry) {
-  const rows = (await DB.prepare("SELECT h.ghl_id, h.keep_id FROM dup_hidden h WHERE h.ghl_id NOT IN (SELECT copy_id FROM merge_log WHERE status IN ('manual','failed','skip')) ORDER BY h.created_at, h.ghl_id LIMIT ?1").bind(max).all()).results || [];
+// v17.11: part/of split the queue into groups by the kept listing's id, so several runs can work at once without ever
+// touching the same business (all copies of one business share the same kept listing, so they land in the same group).
+async function mergeBatch(env, DB, max, dry, part, of) {
+  const shard = of > 1 ? " AND ((unicode(substr(h.keep_id,1,1))*31 + unicode(substr(h.keep_id,2,1))*7 + unicode(substr(h.keep_id,3,1))) % ?3) = ?2" : "";
+  const q = DB.prepare("SELECT h.ghl_id, h.keep_id FROM dup_hidden h WHERE h.ghl_id NOT IN (SELECT copy_id FROM merge_log WHERE status IN ('manual','failed','skip'))" + shard + " ORDER BY h.created_at, h.ghl_id LIMIT ?1");
+  const rows = (await (of > 1 ? q.bind(max, part, of) : q.bind(max)).all()).results || [];
   const out = [];
   for (const r of rows) {
     try {
@@ -2921,7 +2944,8 @@ async function mergeBatch(env, DB, max, dry) {
       out.push(res);
     } catch (e) {
       out.push({ copyId: r.ghl_id, keepId: r.keep_id, status: "error", reason: e.message });
-      if (!dry) await DB.prepare("INSERT OR REPLACE INTO merge_log(loser_id,master_id,copy_id,keep_id,status,err,at) VALUES(?1,?2,?3,?4,'failed',?5,?6)").bind(r.ghl_id, r.keep_id, r.ghl_id, r.keep_id, e.message.slice(0, 300), Date.now()).run().catch(() => {});
+      // a busy GHL while reading changed nothing yet: leave the pair in the queue so the next batch retries it
+      if (!dry && !/^contact read /.test(e.message)) await DB.prepare("INSERT OR REPLACE INTO merge_log(loser_id,master_id,copy_id,keep_id,status,err,at) VALUES(?1,?2,?3,?4,'failed',?5,?6)").bind(r.ghl_id, r.keep_id, r.ghl_id, r.keep_id, e.message.slice(0, 300), Date.now()).run().catch(() => {});
     }
   }
   const left = await DB.prepare("SELECT COUNT(*) n FROM dup_hidden").first();
@@ -9825,7 +9849,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.11-shared";
+const BUILD = "v17.12-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -10266,7 +10290,8 @@ const _export = {
         const fmt = r => `${String(r.status || "").toUpperCase()}  ${r.name || ""}  [copy ${r.copyId} · listing ${r.keepId}]` + (r.master ? `\n   keep ${r.master} = ${r.masterIs}; remove ${r.loser}` : "") + (r.fieldsCopied !== undefined ? `\n   fields ${r.fieldsCopied} · notes ${r.notesCopied} · transcript lines ${r.transcriptLines} · tags +${(r.tagsAdded || []).join(", ") || "none"}` : "") + (r.reason ? `\n   ${r.reason}` : "") + ((r.transcriptSample || []).length ? "\n   e.g. " + r.transcriptSample.join("\n        ") : "");
         if (u.searchParams.has("dry") || req.method === "POST") {
           const dry = req.method !== "POST";
-          const r = await mergeBatch(env, DB, n, dry);
+          const of = Math.max(1, Math.min(8, parseInt(u.searchParams.get("of") || "1", 10) || 1)), part = Math.max(0, Math.min(of - 1, parseInt(u.searchParams.get("part") || "0", 10) || 0));
+          const r = await mergeBatch(env, DB, n, dry, part, of);
           return TXT(`${dry ? "PREVIEW (nothing changed)" : "MERGED"} — ${r.out.length} pair(s); ${r.left} still in the duplicates list.\n\n` + r.out.map(fmt).join("\n\n"));
         }
         const st = (await DB.prepare("SELECT status, COUNT(*) n FROM merge_log GROUP BY status").all()).results || [];
