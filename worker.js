@@ -604,8 +604,34 @@ const SUBCANONOF = s => {
   return SUBCANON.d[t.toLowerCase()] || t;
 };
 
+// v17.13: Google's own categories ("Air Conditioning Contractor", "HVAC contractor") are joined into the site's groups
+// ("HVAC, Heating & Air Conditioning") through the sub_group table; empty table = nothing changes.
+let SUBGROUP = {
+  t: 0,
+  d: {}
+};
+async function loadSubGroups(DB) {
+  const now = Date.now();
+  if (!DB || now - SUBGROUP.t < 60 * 1e3) return SUBGROUP.d;
+  try {
+    const d = {};
+    for (const r of (await DB.prepare("SELECT sub_key, grp, main FROM sub_group").all()).results || []) d[r.sub_key] = {
+      grp: r.grp,
+      main: r.main
+    };
+    SUBGROUP = {
+      t: now,
+      d: d
+    };
+  } catch {
+    SUBGROUP.t = now;
+  }
+  return SUBGROUP.d;
+}
+
 async function loadCatMap(DB) {
   await loadSubCanon(DB);
+  await loadSubGroups(DB);
   const now = Date.now();
   if (!DB || now - CATMAP.t < 60 * 1e3) return CATMAP.d;
   try {
@@ -1310,7 +1336,12 @@ function norm(c, m) {
     const tagCat = allMains().find(m => (c.tags || []).some(t => String(t).trim().toLowerCase() === m.toLowerCase())) || ((c.tags || []).some(t => String(t).trim().toLowerCase() === "other") ? "Other" : "");
     if (tagCat) cat = tagCat;
   }
-  const sub = SUBCANONOF(FIXMOJI(String(P(v, "subcategory", "sub category", "secondary category") || rawSub || "").split(",")[0].trim()));
+  let sub = SUBCANONOF(FIXMOJI(String(P(v, "subcategory", "sub category", "secondary category") || rawSub || "").split(",")[0].trim()));
+  const sg = SUBGROUP.d[SUBKEY(sub)];
+  if (sg) {
+    cat = sg.main;
+    sub = sg.grp;
+  }
   const nm = FIXMOJI(/[A-Z]/.test(name) ? name : TC(name));
   const ph = c.phone || P(v, "phone", "formatted phone") || PC(v, "gbp phone", "phone 1", "mobile 1", "phone") || "";
   const addr = FIXMOJI(c.address1 || P(v, "address", "full address") || "");
@@ -1842,6 +1873,10 @@ async function migrate(DB, env) {
   } catch {}
   try {
     await DB.prepare("CREATE TABLE IF NOT EXISTS category_map(sub_slug TEXT PRIMARY KEY, sub TEXT DEFAULT '', main TEXT NOT NULL, updated_at INTEGER)").run();
+  } catch {}
+  // v17.13: one row per Google category (sub_key = trimmed, lower-cased) -> the site's group name and main category.
+  try {
+    await DB.prepare("CREATE TABLE IF NOT EXISTS sub_group(sub_key TEXT PRIMARY KEY, sub_slug TEXT DEFAULT '', grp TEXT NOT NULL, main TEXT NOT NULL, updated_at INTEGER)").run();
   } catch {}
   try {
     await DB.prepare("CREATE TABLE IF NOT EXISTS media(url TEXT PRIMARY KEY, name TEXT DEFAULT '', alt TEXT DEFAULT '', created_at INTEGER)").run();
@@ -9842,7 +9877,7 @@ function BESTCTA(idx, slug, hood) {
   return `<div class="best-cta"><div><b>See the top 10 ${E(BEST_NOUN(t.n))} in ${E(inHood ? hoodName(hood) : S.city)}</b><br><span style="font-size:13px;color:${T.muted}">Ranked by Google rating and number of reviews</span></div><a class="btn btn-p btn-sm" href="/best/${E(t.s)}${inHood ? "/" + E(hood) : ""}">View the list</a></div>`;
 }
 
-const BUILD = "v17.12-shared";
+const BUILD = "v17.13-shared";
 
 const APP_COOKIE = "gl_app";
 
@@ -16024,6 +16059,11 @@ ${Object.entries(NOTIFY_KINDS).map(([ kind, label ]) => `<div style="display:fle
         }
       }
     }
+    // v17.13: an old Google sub-category address (/contractors-and-construction/hvac-contractor) forwards to its group's page
+    if (p.length === 2 && DB) try {
+      const sg = await DB.prepare("SELECT grp, main FROM sub_group WHERE sub_slug=?1").bind(p[1]).first();
+      if (sg) return Response.redirect(AUTH.SITE_URL + `/${SL(sg.main)}/${SLUG(sg.grp)}`, 301);
+    } catch {}
     if (p.length === 2) {
       const cat = d.cats.find(x => x.slug === p[0]);
       if (cat) {
