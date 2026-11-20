@@ -40,3 +40,26 @@ branch cpu-followups and are not part of this pilot.
 
 Future design: webhook-first sync (GHL contact-changed webhook → refreshOne) with a periodic full reconciliation
 (e.g. every few hours) for removals and anything a webhook missed.
+
+## Result after 48 h (window 2026-11-18 18:00 → 2026-11-20 18:00 UTC, same sources and filters as the baseline)
+| | Orlando baseline | Orlando pilot | change | Miami baseline | Miami same window | change |
+|---|---|---|---|---|---|---|
+| Scheduled runs | 568 | 587 | | 573 | 566 | |
+| Scheduled CPU ms | 669,538 | 269,013 | **−59.8%** | 895,728 | 759,960 | −15.2% |
+| CPU ms per run | 1,178.8 | 458.3 | −61.1% | 1,563.2 | 1,342.7 | −14.1% |
+| Day 1 / day 2 CPU ms | 340,528 / 329,010 | 143,934 / 125,079 | | 459,490 / 436,238 | 389,611 / 370,349 | |
+| Failed runs (Cloudflare) | 0 | 0 | | 0 | 0 | |
+| Full passes completed | 79 | 34 | −57% | 41 | 57 | +39% |
+| Contacts read | 963,000 | 475,118 | −51% | 1,122,000 | 1,232,845 | +10% |
+| Time between completed passes | ~36 min | median 85, max 90 min | | | median 45, max 110 min | |
+| HTTP CPU ms | 339,790 | 444,132 | +31% | 1,014,141 | 1,393,666 | +37% |
+Sync ticks that logged a failure (the pass resumed next tick): Orlando 2 (one D1 "network connection lost", one
+"sync already running"); Miami 18 (17 GHL 429, 1 D1 overload) — the duplicate merge was running on Miami in this window.
+- Confounders: the other chat's duplicate merge ran 18–20 Nov (mostly Miami, ~10k GHL deletes, admin requests counted as
+  HTTP), so Miami is not a clean control; Miami's contact count fell ~10k, which made its passes shorter (more of them).
+  HTTP CPU rose on both sites for the same reason, not because of the pilot.
+- Against Miami's own drift (−15%), the pilot's share of Orlando's drop is about −53% of scheduled CPU.
+- Freshness: an ordinary GHL edit now reaches Orlando's site within one pass cycle (~85–90 min, about 45 min on average)
+  instead of ~36 min; removals (two missed passes) ~3 h. No complaints or failures traced to it.
+- Recommendation (20 Nov): keep Orlando at 60; extend to Miami with Eric's OK (expected about −45% of Miami's scheduled
+  CPU, the largest single item); longer term, webhook-first sync with a periodic full reconciliation.
