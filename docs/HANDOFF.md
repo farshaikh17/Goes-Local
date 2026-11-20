@@ -8,6 +8,16 @@
 
 > **Status updates since the handoff** are tracked in `docs/DEPLOY.md` (deploy setup) and `changelog/`.
 
+## Status 20 Nov 2026 — sub-categories grouped (Miami)
+
+- **Live:** Orlando and Miami on v17.13-shared. Miami's 790 Google sub-categories are now 149 site groups (`sub_group` table,
+  built from docs/mockups/subcategory-mapping-miami.csv); 429 listings moved to the right main category (old addresses 301).
+  Orlando's `sub_group` is empty (no change) until its own mock-up is approved (603 Google categories).
+- **To load a city's mapping:** insert `sub_group` rows, update `businesses` (cs/cat/sub/slug) and add `slug_redirects` for
+  moved listings (script in the session; see changelog/v17.13.md), rebuild `biz_fts`, delete `meta.shell_v1`, bump KV `cache_gen`.
+  Take `sub_backup` first. Rollback = copy `sub_backup` back, delete the `sub_group` rows, same cache steps.
+- **Rule:** stores/shops/suppliers stay one group per main category ("Stores & Suppliers") — Eric, 20 Nov.
+
 ## Status 19 Nov 2026 evening — duplicate merge finished (read first)
 
 - **Live:** Orlando and Miami on v17.11-shared (v17.10 fix + v17.11 "run in groups" — changelog/v17.11.md). Tampa/states unchanged.
