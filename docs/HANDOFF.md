@@ -36,6 +36,12 @@
 - **CPU pilot note:** the merges ran on 18–19 Nov (mostly Miami), inside the 20 Nov CPU comparison window, so Miami's
   numbers include merge requests; Orlando and Miami were also redeployed (v17.10, v17.11) in that window.
 
+## Two chats (Eric, 20 Nov)
+- **Main chat (Opus):** owns the live code, releases and anything risky or wide (deploys, CPU work, spam protection,
+  database changes). Its branch `claude/goes-local-deployment-u2h1bx` is the one that goes live.
+- **Sonnet chat:** easier, contained tasks. It works from that same branch (fetch and merge it first) and pushes its
+  changes there, or hands them to the main chat to release.
+
 ## RULE (20 Nov, after three releases replaced each other): one branch for live code
 Deploy ONLY from `claude/goes-local-deployment-u2h1bx`. Before any deploy: `git fetch`, then check the commit that is live
 now (Cloudflare deployments, "workers/message") is in what you deploy: `git merge-base --is-ancestor <live commit> HEAD`.
