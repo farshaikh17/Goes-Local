@@ -63,3 +63,7 @@ Sync ticks that logged a failure (the pass resumed next tick): Orlando 2 (one D1
   instead of ~36 min; removals (two missed passes) ~3 h. No complaints or failures traced to it.
 - Recommendation (20 Nov): keep Orlando at 60; extend to Miami with Eric's OK (expected about −45% of Miami's scheduled
   CPU, the largest single item); longer term, webhook-first sync with a periodic full reconciliation.
+
+## Extended to Miami (20 Nov, Eric: "put everything live")
+- Miami CITY_SYNC_COOLDOWN_MIN=60 from version aaa909da (20 Nov ~19:10 UTC). To undo only this: deploy with
+  `--var CITY_SYNC_COOLDOWN_MIN:10` or delete the Variable in the dashboard.

@@ -36,6 +36,12 @@
 - **CPU pilot note:** the merges ran on 18–19 Nov (mostly Miami), inside the 20 Nov CPU comparison window, so Miami's
   numbers include merge requests; Orlando and Miami were also redeployed (v17.10, v17.11) in that window.
 
+## RULE (20 Nov, after three releases replaced each other): one branch for live code
+Deploy ONLY from `claude/goes-local-deployment-u2h1bx`. Before any deploy: `git fetch`, then check the commit that is live
+now (Cloudflare deployments, "workers/message") is in what you deploy: `git merge-base --is-ancestor <live commit> HEAD`.
+If not, merge first. Version numbers: take the next number after the highest in changelog/ on this branch.
+Live checks never post to a real listing unless the guard is confirmed on the page first.
+
 ## Status 18 Nov 2026 evening (older — handover to the next chat)
 
 **Live:** Orlando v17.07 (version eff5dfc9; CPU pilot, CITY_SYNC_COOLDOWN_MIN=60, confirmed skipping at 17:50 UTC —
